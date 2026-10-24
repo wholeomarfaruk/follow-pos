@@ -1,0 +1,341 @@
+<?php
+
+namespace App\Providers;
+
+use App\Events\LoginDetected;
+use App\Events\OtpRequested;
+use App\Events\PasswordResetRequested;
+use App\Events\UserRegistered;
+use App\Listeners\AuthActivityListener;
+use App\Listeners\NotificationEventListener;
+use App\Marketing\Context\MarketingContextBuilder;
+use App\Models\ActivityLog;
+use App\Models\Setting;
+use App\Services\QueueHealthService;
+use Carbon\CarbonImmutable;
+use Illuminate\Auth\Events\Failed;
+use Illuminate\Auth\Events\Login;
+use Illuminate\Auth\Events\Logout;
+use Illuminate\Auth\Events\PasswordReset;
+use Illuminate\Foundation\Http\Middleware\PreventRequestsDuringMaintenance;
+use Illuminate\Support\Facades\Blade;
+use Illuminate\Support\Facades\Date;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\ServiceProvider;
+use Illuminate\Validation\Rules\Password;
+use Laravel\Fortify\Contracts\LoginResponse;
+
+class AppServiceProvider extends ServiceProvider
+{
+    public function register(): void
+    {
+        $this->app->singleton(LoginResponse::class, \App\Http\Responses\LoginResponse::class);
+
+        // Chart-of-accounts ids by code, looked up once per request.
+        $this->app->scoped(\App\Services\Profiles\LedgerAccounts::class);
+
+        $this->app->scoped(
+            MarketingContextBuilder::class,
+            fn ($app) => new MarketingContextBuilder($app['request'])
+        );
+
+        // Scoped so the active-offer list is loaded once per request/job.
+        $this->app->scoped(\App\Services\OfferService::class);
+    }
+
+    public function boot(): void
+    {
+        $this->configureDefaults();
+        $this->registerActivityTracking();
+        $this->registerAuthListeners();
+        $this->registerNotificationListeners();
+        QueueHealthService::listen();
+        $this->configureAppNameFromSettings();
+        $this->configureMailFromSettings();
+        $this->configureMarketingFromSettings();
+
+        // ecomx-fashion theme's own components (<x-ux-img>, <x-product-card>, ...),
+        // used bare (no namespace prefix) — matches how the theme's blade views call them.
+        Blade::anonymousComponentPath(resource_path('views/ecomx-fashion/components'), null);
+
+        // ecomx-anyniche theme's own components — registered with the
+        // 'anyniche' prefix (not null/bare) so its components don't
+        // collide with ecomx-fashion's same-named ones (e.g. ux-img,
+        // product-card). Its views use <x-anyniche::ux-img> etc.
+        Blade::anonymousComponentPath(resource_path('views/ecomx-anyniche/components'), 'anyniche');
+
+        // Registers resources/views/layouts/landingpage/ as an anonymous
+        // component path (no prefix — same bare-tag convention as the
+        // ecomx-fashion components path above) so <x-landingpage-layout>
+        // is resolvable — needed by
+        // App\Http\Controllers\Admin\LandingPagePreviewController (a plain
+        // controller, no Livewire #[Layout] attribute to rely on, so it
+        // invokes the layout as a genuine Blade component instead; see
+        // resources/views/livewire/landingpage-engine/landingpage-preview.blade.php).
+        // Laravel only auto-discovers anonymous components under
+        // resources/views/components/ by default — layouts/landingpage/
+        // needs this explicit registration. A registered prefix would
+        // require the unusual <x-prefix::name> tag syntax instead of the
+        // normal dotted <x-prefix.name> form — using null here avoids that.
+        Blade::anonymousComponentPath(resource_path('views/layouts/landingpage'), null);
+
+        // Landing page template packages may ship their own per-template
+        // Livewire component + view (e.g. an order-form embedded in
+        // template.blade.php via @livewire()) — kept inside the template's
+        // own folder rather than resources/views, matching the "everything
+        // about a template lives in its own package" rule. Registered as a
+        // view namespace, resolved as landingpage-template::{key}.{view}.
+        // Both roots share one namespace: Blade's View::addNamespace()
+        // accepts multiple paths and tries them in order, so a custom
+        // template's view is found the same way a system (resources/)
+        // template's is. Custom templates live under storage/app/public
+        // (not bare storage/) — web-reachable via the storage:link symlink
+        // at public/storage, matching every other public upload area
+        // (uploads/, frontend/) — see LandingPageTemplate::basePath().
+        // loadViewsFrom() uses Symfony Finder under the hood, which throws
+        // if a path doesn't exist yet — ensure the custom-templates
+        // directory (nothing creates it until the first custom template
+        // is uploaded) is present before registering it.
+        File::ensureDirectoryExists(storage_path('app/public/landingpage-templates'));
+
+        $this->loadViewsFrom([
+            resource_path('landingpage-templates'),
+            storage_path('app/public/landingpage-templates'),
+        ], 'landingpage-template');
+
+        $this->registerLandingPageTemplateComponents();
+
+        // Admins must always be able to reach the panel to turn maintenance mode
+        // back off — without this, enabling it via Site Settings locks everyone
+        // (including admins) out with no way back in except the CLI. livewire/update
+        // must be excluded too since every wire:click (including tab switches and
+        // the maintenance toggle itself) is a background POST to that endpoint,
+        // not to the admin/* page URL. login/two-factor-challenge are excluded so a
+        // logged-out staff member can still sign in during maintenance in the first
+        // place. '/' is excluded from this GLOBAL check entirely because it runs
+        // before the web group's session middleware, so auth() is never available
+        // here — the real "block anonymous, allow staff" decision for '/' happens
+        // in App\Http\Middleware\PreventPublicMaintenanceForStaff (routes/web.php),
+        // which runs later, after sessions/auth are resolved.
+        PreventRequestsDuringMaintenance::except([
+            'admin/*', 'accounts', 'accounts/*', 'livewire/*', 'login', 'two-factor-challenge', '/',
+        ]);
+    }
+
+    protected function registerActivityTracking(): void
+    {
+        ActivityLog::creating(function (ActivityLog $activity) {
+            if (app()->runningInConsole()) {
+                return;
+            }
+
+            $activity->ip_address ??= request()->ip();
+            $activity->user_agent ??= request()->userAgent();
+        });
+    }
+
+    protected function registerAuthListeners(): void
+    {
+        $listener = AuthActivityListener::class;
+
+        Event::listen(Login::class,         [$listener, 'handleLogin']);
+        Event::listen(Logout::class,        [$listener, 'handleLogout']);
+        Event::listen(Failed::class,        [$listener, 'handleFailed']);
+        Event::listen(PasswordReset::class, [$listener, 'handlePasswordReset']);
+    }
+
+    protected function registerNotificationListeners(): void
+    {
+        $listener = NotificationEventListener::class;
+
+        Event::listen(UserRegistered::class,        [$listener, 'handle']);
+        Event::listen(PasswordResetRequested::class, [$listener, 'handle']);
+        Event::listen(OtpRequested::class,          [$listener, 'handle']);
+        Event::listen(LoginDetected::class,         [$listener, 'handle']);
+    }
+
+    // Migrations/seeders run before the settings table exists on a fresh
+    // install (and some artisan commands run before any DB connection is
+    // even configured), so this must never assume the table is there —
+    // Email Configuration simply has no effect until it's been saved once.
+    protected function configureMailFromSettings(): void
+    {
+        try {
+            if (! Schema::hasTable('settings')) {
+                return;
+            }
+        } catch (\Throwable $e) {
+            return;
+        }
+
+        if (! Setting::get('enabled', true, 'email')) {
+            return;
+        }
+
+        $mailer = Setting::get('active_mailer', null, 'email');
+
+        if (! $mailer) {
+            return;
+        }
+
+        config(['mail.default' => $mailer]);
+
+        $credentials = Setting::get("{$mailer}_credentials", [], 'email');
+
+        if ($mailer === 'smtp' && $credentials) {
+            config([
+                'mail.mailers.smtp.host' => $credentials['host'] ?? config('mail.mailers.smtp.host'),
+                'mail.mailers.smtp.port' => $credentials['port'] ?? config('mail.mailers.smtp.port'),
+                'mail.mailers.smtp.username' => $credentials['username'] ?? null,
+                'mail.mailers.smtp.password' => $credentials['password'] ?? null,
+                // The admin UI stores the legacy "tls"/"ssl" encryption labels, but Symfony's
+                // mailer only accepts "smtp" (STARTTLS, e.g. port 587) or "smtps" (implicit
+                // TLS, e.g. port 465) as a scheme — passing "tls" straight through throws
+                // UnsupportedSchemeException. "ssl" and port 465 both mean implicit TLS.
+                'mail.mailers.smtp.scheme' => ((string) ($credentials['encryption'] ?? '') === 'ssl'
+                    || (int) ($credentials['port'] ?? 0) === 465)
+                    ? 'smtps'
+                    : 'smtp',
+            ]);
+        } elseif ($credentials['api_key'] ?? null) {
+            match ($mailer) {
+                'resend' => config(['services.resend.key' => $credentials['api_key']]),
+                'postmark' => config(['services.postmark.token' => $credentials['api_key']]),
+                'ses' => null, // SES uses AWS credentials from services.ses, not a single api_key
+                default => null,
+            };
+        }
+
+        $fromEmail = Setting::get('from_email', null, 'email');
+        $fromName = Setting::get('from_name', null, 'email');
+
+        if ($fromEmail) {
+            config([
+                'mail.from.address' => $fromEmail,
+                'mail.from.name' => $fromName ?? config('mail.from.name'),
+            ]);
+        }
+    }
+
+    // Site Settings → Site Name drives config('app.name') so emails, push
+    // titles, feeds etc. follow the admin setting instead of .env APP_NAME.
+    // Same settings-table guard as above; empty Site Name keeps APP_NAME.
+    protected function configureAppNameFromSettings(): void
+    {
+        try {
+            if (! Schema::hasTable('settings')) {
+                return;
+            }
+        } catch (\Throwable $e) {
+            return;
+        }
+
+        $siteName = Setting::get('site_name');
+
+        if (filled($siteName)) {
+            config(['app.name' => $siteName]);
+        }
+    }
+
+    // Site Settings → Marketing tab lets admins configure Meta/GTM tracking
+    // from the DB instead of .env. Same guard as configureMailFromSettings()
+    // above — migrations/fresh installs run before the settings table
+    // exists. A DB value only overrides its .env-driven config default when
+    // actually set (non-empty), so an unconfigured install keeps behaving
+    // exactly as it does today.
+    protected function configureMarketingFromSettings(): void
+    {
+        try {
+            if (! Schema::hasTable('settings')) {
+                return;
+            }
+        } catch (\Throwable $e) {
+            return;
+        }
+
+        $pixelId = Setting::get('meta_pixel_id', null, 'marketing');
+        if (filled($pixelId)) {
+            config(['services.meta.pixel_id' => $pixelId]);
+        }
+
+        $accessToken = Setting::get('meta_access_token', null, 'marketing');
+        if (filled($accessToken)) {
+            config(['services.meta.access_token' => $accessToken]);
+        }
+
+        $apiVersion = Setting::get('meta_api_version', null, 'marketing');
+        if (filled($apiVersion)) {
+            config(['services.meta.api_version' => $apiVersion]);
+        }
+
+        $testEventCode = Setting::get('meta_test_event_code', null, 'marketing');
+        if (filled($testEventCode)) {
+            config(['services.meta.test_event_code' => $testEventCode]);
+        }
+
+        $gtmEnabled = Setting::get('gtm_enabled', null, 'marketing');
+        if ($gtmEnabled !== null) {
+            config(['marketing.gtm.enabled' => (bool) $gtmEnabled]);
+        }
+
+        $gtmContainerId = Setting::get('gtm_container_id', null, 'marketing');
+        if (filled($gtmContainerId)) {
+            config(['marketing.gtm.container_id' => $gtmContainerId]);
+        }
+
+        $destinations = Setting::get('server_destinations', null, 'marketing');
+        if (filled($destinations)) {
+            config(['marketing.destinations' => array_filter(explode(',', (string) $destinations))]);
+        }
+
+        $sessionTimeout = Setting::get('session_timeout_minutes', null, 'marketing');
+        if (filled($sessionTimeout)) {
+            config(['marketing.session_timeout_minutes' => (int) $sessionTimeout]);
+        }
+
+        $attributionLifetime = Setting::get('attribution_lifetime_days', null, 'marketing');
+        if (filled($attributionLifetime)) {
+            config(['marketing.attribution_lifetime_days' => (int) $attributionLifetime]);
+        }
+    }
+
+    // Template packages' optional per-template Livewire components (see
+    // App\LandingPageEngine\TemplateComponentRegistrar) — guarded like
+    // configureMailFromSettings() above, since this runs on every boot
+    // including migrations/artisan commands before the table exists on a
+    // fresh install.
+    protected function registerLandingPageTemplateComponents(): void
+    {
+        try {
+            if (! Schema::hasTable('landing_page_templates')) {
+                return;
+            }
+        } catch (\Throwable $e) {
+            return;
+        }
+
+        app(\App\LandingPageEngine\TemplateComponentRegistrar::class)->registerAll();
+    }
+
+    protected function configureDefaults(): void
+    {
+        Date::use(CarbonImmutable::class);
+
+        DB::prohibitDestructiveCommands(
+            app()->isProduction(),
+        );
+
+        Password::defaults(fn (): ?Password => app()->isProduction()
+            ? Password::min(12)
+                ->mixedCase()
+                ->letters()
+                ->numbers()
+                ->symbols()
+                ->uncompromised()
+            : null
+        );
+    }
+}

@@ -1,0 +1,811 @@
+<?php
+
+namespace App\Livewire\Admin\SiteSettings;
+
+use App\Livewire\Traits\WithMediaPicker;
+use App\Marketing\Destinations\DestinationRegistry;
+use App\Models\Country;
+use App\Models\Currency;
+use App\Models\Language;
+use App\Models\Setting;
+use App\Services\StockService;
+use App\Support\EnvFile;
+use App\Support\Units;
+use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Livewire\Attributes\Url;
+use Livewire\Component;
+
+class SiteSettings extends Component
+{
+    use WithMediaPicker;
+
+    // Bound to ?group=... so sidebar links (e.g. Advance → Marketing) can
+    // deep-link straight into a tab. Not written back to the URL on every
+    // in-page tab click (as:'group' + no history push isn't needed) — the
+    // default keeps existing bare /admin/site-settings links landing on
+    // "general" exactly as before.
+    #[Url(as: 'group')]
+    public string $activeGroup = 'general';
+
+    // General
+    public string  $site_name        = '';
+    public string  $site_short_name  = '';
+    public string  $site_tagline     = '';
+
+    // Application (read-only display + maintenance toggle, not part of the general save)
+    public bool $maintenance_mode = false;
+
+    // Company
+    public string $company_name          = '';
+    public string $company_legal_name    = '';
+    public string $company_email         = '';
+    public string $company_phone         = '';
+    public string $company_mobile        = '';
+    public string $company_website       = '';
+    public string $company_address       = '';
+    public string $company_city          = '';
+    public string $company_state         = '';
+    public ?int   $company_country_id    = null;
+    public string $company_postal_code   = '';
+    public string $company_tax_number    = '';
+    public string $company_trade_license = '';
+    public string $company_map_location  = '';
+
+    public ?int $company_logo    = null;
+    public ?int $company_favicon = null;
+
+    // Branding (file IDs)
+    public ?int $site_logo        = null;
+    public ?int $site_logo_black  = null;
+    public ?int $site_logo_white  = null;
+    public ?int $site_logo_symbol = null;
+    public ?int $site_favicon     = null;
+
+    // Localization
+    public string  $timezone           = 'UTC';
+    public string  $date_format        = 'd-m-Y';
+    public string  $time_format        = 'H:i';
+    public string  $currency           = 'USD';
+    public string  $currency_symbol    = '$';
+    public string  $number_format      = '1,234.56';
+    public string  $default_unit       = 'meter';
+    public bool    $show_converted_unit = false;
+    public string  $converted_unit     = 'yard';
+    public ?int    $default_language_id = null;
+
+    // Mail
+    public string $mail_from_name    = '';
+    public string $mail_from_address = '';
+
+    // Social
+    public string $facebook       = '';
+    public string $facebook_group = '';
+    public string $twitter        = '';
+    public string $instagram      = '';
+    public string $linkedin       = '';
+    public string $tiktok         = '';
+    public string $youtube        = '';
+
+    // Contacts (storefront support channels — see App\Support\ContactInfo)
+    public string $support_phone     = '';
+    public string $support_whatsapp  = '';
+    public string $support_messenger = '';
+    public string $support_hours     = '';
+
+    // Registration
+    public bool $allow_registration    = true;
+    public bool $restrict_by_country   = false;
+    public bool $require_email_verify  = false;
+
+    // Pricing
+    public string $min_margin_percent = '15';
+
+    // Marketing
+    public string $meta_pixel_id             = '';
+    public string $meta_access_token         = '';
+    public string $meta_api_version          = 'v23.0';
+    public string $meta_test_event_code      = '';
+    public bool   $gtm_enabled               = false;
+    public string $gtm_container_id          = '';
+    public string $tiktok_pixel_id           = '';
+    public string $ga4_measurement_id        = '';
+    public string $server_destinations       = 'meta';
+    public string $session_timeout_minutes   = '30';
+    public string $attribution_lifetime_days = '90';
+
+    // Custom Code — raw snippets injected into every storefront/landing page
+    // (see components/custom-code.blade.php)
+    public string $head_code       = '';
+    public string $body_start_code = '';
+    public string $body_end_code   = '';
+
+    // Queue (read-only display + notes)
+    public string $queue_notes = '';
+    public string $queue_cron_supervisor_path = '';
+
+    // Modules — dependency chain: purchase -> inventory -> accounts
+    public bool $purchase_enabled  = false;
+    public bool $inventory_enabled = false;
+    public bool $accounts_enabled  = false;
+    public bool $marketing_enabled = false;
+
+    // Media — thumbnail generation (see App\Services\Media\ThumbnailService)
+    public bool $thumbnail_enabled = true;
+    public int  $thumbnail_width   = 200;
+    public string $thumbnail_format  = 'avif';
+    public int  $thumbnail_quality = 65;
+
+    /** @var array<int, string> */
+    public array $timezoneOptions = [];
+
+    public function mount(): void
+    {
+        $this->timezoneOptions = timezone_identifiers_list();
+
+        $this->loadSettings();
+    }
+
+    public function setGroup(string $group): void
+    {
+        $this->activeGroup = $group;
+    }
+
+    /**
+     * Live cascade so the UI reflects dependencies as toggles are clicked:
+     * purchase -> inventory -> accounts (each requires the one before it).
+     */
+    /** A new stock unit of another kind (meter → kg) can't keep its converted unit (yard). */
+    public function updatedDefaultUnit(): void
+    {
+        $options = Units::sameKind($this->default_unit);
+
+        if (! in_array($this->converted_unit, $options, true)) {
+            $this->converted_unit = $options[0] ?? '';
+        }
+    }
+
+    public function updatedPurchaseEnabled(bool $value): void
+    {
+        if (! $value) {
+            $this->inventory_enabled = false;
+            $this->accounts_enabled = false;
+        }
+    }
+
+    public function updatedInventoryEnabled(bool $value): void
+    {
+        if ($value) {
+            $this->purchase_enabled = true;
+        } else {
+            $this->accounts_enabled = false;
+        }
+    }
+
+    public function updatedAccountsEnabled(bool $value): void
+    {
+        if ($value) {
+            $this->inventory_enabled = true;
+            $this->purchase_enabled = true;
+        }
+    }
+
+    /**
+     * Applies immediately — not part of the "Save Settings" form flow, since
+     * this mutates live filesystem/maintenance state rather than a Setting row.
+     */
+    public function toggleMaintenanceMode(): void
+    {
+        $goingDown = ! app()->isDownForMaintenance();
+
+        Artisan::call($goingDown ? 'down' : 'up');
+
+        $this->maintenance_mode = app()->isDownForMaintenance();
+
+        activity('settings')
+            ->causedBy(auth()->user())
+            ->event('updated')
+            ->log($goingDown ? 'Application was put into maintenance mode' : 'Application was brought back online');
+
+        $this->dispatch('toast', [
+            'type'    => 'success',
+            'message' => $goingDown ? 'Application is now in maintenance mode' : 'Application is back online',
+        ]);
+    }
+
+    public function save(): void
+    {
+        // AI Order saves through its own component (AiOrderSettings); Enter
+        // in one of its inputs still submits this form — ignore it.
+        if ($this->activeGroup === 'ai_order') {
+            return;
+        }
+
+        if ($this->activeGroup === 'application') {
+            $this->validate([
+                'site_short_name' => 'nullable|string|max:50',
+            ]);
+
+            $old = [
+                'site_short_name' => Setting::get('site_short_name'),
+            ];
+
+            Setting::set('site_short_name', $this->site_short_name);
+
+            $new = [
+                'site_short_name' => $this->site_short_name,
+            ];
+
+            $this->logSettingsChange('Application settings were updated', $old, $new);
+        }
+
+        if ($this->activeGroup === 'general') {
+            $this->validate([
+                'site_name'       => 'required|string|max:100',
+                'site_short_name' => 'nullable|string|max:50',
+            ]);
+
+            $old = [
+                'site_name'       => Setting::get('site_name'),
+                'site_short_name' => Setting::get('site_short_name'),
+                'site_tagline'    => Setting::get('site_tagline'),
+            ];
+
+            Setting::set('site_name',         $this->site_name);
+            Setting::set('site_short_name',   $this->site_short_name);
+            Setting::set('site_tagline',      $this->site_tagline);
+            Setting::set('site_logo',         $this->site_logo        ? (string) $this->site_logo        : null);
+            Setting::set('site_logo_black',   $this->site_logo_black  ? (string) $this->site_logo_black  : null);
+            Setting::set('site_logo_white',   $this->site_logo_white  ? (string) $this->site_logo_white  : null);
+            Setting::set('site_logo_symbol',  $this->site_logo_symbol ? (string) $this->site_logo_symbol : null);
+            Setting::set('site_favicon',      $this->site_favicon     ? (string) $this->site_favicon     : null);
+
+            $new = [
+                'site_name'       => $this->site_name,
+                'site_short_name' => $this->site_short_name,
+                'site_tagline'    => $this->site_tagline,
+            ];
+
+            $this->logSettingsChange('General settings were updated', $old, $new);
+        }
+
+        if ($this->activeGroup === 'company') {
+            $this->validate([
+                'company_name'       => 'required|string|max:150',
+                'company_legal_name' => 'nullable|string|max:150',
+                'company_email'      => 'nullable|email|max:150',
+                'company_phone'      => 'nullable|string|max:30',
+                'company_mobile'     => 'nullable|string|max:30',
+                'company_website'    => 'nullable|url|max:150',
+                'company_address'    => 'nullable|string|max:255',
+                'company_city'       => 'nullable|string|max:100',
+                'company_state'      => 'nullable|string|max:100',
+                'company_country_id' => 'nullable|integer|exists:countries,id',
+                'company_postal_code'   => 'nullable|string|max:20',
+                'company_tax_number'    => 'nullable|string|max:50',
+                'company_trade_license' => 'nullable|string|max:50',
+                'company_map_location'  => 'nullable|string|max:1000',
+            ]);
+
+            $companyFields = [
+                'company_name', 'company_legal_name', 'company_email', 'company_phone',
+                'company_mobile', 'company_website', 'company_address', 'company_city',
+                'company_state', 'company_country_id', 'company_postal_code',
+                'company_tax_number', 'company_trade_license', 'company_map_location',
+            ];
+
+            $old = [];
+            foreach ($companyFields as $field) {
+                $old[$field] = Setting::get($field, null, 'company');
+            }
+
+            foreach ($companyFields as $field) {
+                Setting::set($field, $this->$field !== null ? (string) $this->$field : null, 'company');
+            }
+
+            Setting::set('company_logo',    $this->company_logo    ? (string) $this->company_logo    : null, 'company');
+            Setting::set('company_favicon', $this->company_favicon ? (string) $this->company_favicon : null, 'company');
+
+            $new = [];
+            foreach ($companyFields as $field) {
+                $new[$field] = $this->$field;
+            }
+
+            $this->logSettingsChange('Company information was updated', $old, $new);
+        }
+
+        if ($this->activeGroup === 'localization') {
+            $this->validate([
+                'timezone'            => 'required|string|timezone',
+                'date_format'         => 'required|string',
+                'time_format'         => 'required|string',
+                'currency'            => 'required|string|exists:currencies,code',
+                'default_unit'        => 'required|string|in:'.implode(',', array_keys(Units::UNITS)),
+                'show_converted_unit' => 'boolean',
+                'converted_unit'      => 'nullable|string|in:'.implode(',', Units::sameKind($this->default_unit)),
+                'default_language_id' => 'required|integer|exists:languages,id',
+            ]);
+
+            $old = [
+                'timezone'        => Setting::get('timezone', null, 'localization'),
+                'date_format'     => Setting::get('date_format', null, 'localization'),
+                'time_format'     => Setting::get('time_format', null, 'localization'),
+                'currency'        => Setting::get('currency', null, 'localization'),
+                'currency_symbol' => Setting::get('currency_symbol', null, 'localization'),
+                'number_format'   => Setting::get('number_format', null, 'localization'),
+                'default_unit'    => Setting::get('default_unit', null, 'localization'),
+                'show_converted_unit' => (bool) Setting::get('show_converted_unit', '0', 'localization'),
+                'converted_unit'  => Setting::get('converted_unit', null, 'localization'),
+            ];
+
+            // The whole app (scheduler, today(), timestamps) runs on APP_TIMEZONE, so the
+            // setting goes to .env too; written first so a read-only .env saves nothing.
+            if ($this->timezone !== config('app.timezone')) {
+                try {
+                    EnvFile::set('APP_TIMEZONE', $this->timezone);
+                } catch (\RuntimeException $e) {
+                    $this->addError('timezone', 'Timezone save হয়নি — ' . $e->getMessage());
+
+                    return;
+                }
+
+                config(['app.timezone' => $this->timezone]);
+                date_default_timezone_set($this->timezone);
+                // Running queue workers re-read .env only after a restart.
+                rescue(fn () => Artisan::call('queue:restart'), report: false);
+            }
+
+            $selectedCurrency = Currency::where('code', $this->currency)->firstOrFail();
+            $this->currency_symbol = $selectedCurrency->symbol ?? '';
+
+            Setting::set('timezone',        $this->timezone,        'localization');
+            Setting::set('date_format',     $this->date_format,     'localization');
+            Setting::set('time_format',     $this->time_format,     'localization');
+            Setting::set('currency',        $this->currency,        'localization');
+            Setting::set('currency_symbol', $this->currency_symbol, 'localization');
+            Setting::set('number_format',   $this->number_format,   'localization');
+            Setting::set('default_unit',    $this->default_unit,    'localization');
+            // Only a unit of the stock unit's kind is kept (box / set convert to nothing).
+            $converted = in_array($this->converted_unit, Units::sameKind($this->default_unit), true) ? $this->converted_unit : '';
+            Setting::set('show_converted_unit', $this->show_converted_unit && $converted !== '' ? '1' : '0', 'localization');
+            Setting::set('converted_unit',  $converted,             'localization');
+
+            $language = Language::findOrFail($this->default_language_id);
+
+            if (! $language->is_default) {
+                DB::transaction(function () use ($language) {
+                    Language::where('is_default', true)->update(['is_default' => false]);
+                    $language->update(['is_default' => true]);
+                });
+
+                Cache::forget('languages:active');
+            }
+
+            $new = [
+                'timezone'        => $this->timezone,
+                'date_format'     => $this->date_format,
+                'time_format'     => $this->time_format,
+                'currency'        => $this->currency,
+                'currency_symbol' => $this->currency_symbol,
+                'number_format'   => $this->number_format,
+                'default_unit'    => $this->default_unit,
+                'show_converted_unit' => $this->show_converted_unit,
+                'converted_unit'  => $this->converted_unit,
+            ];
+
+            $this->logSettingsChange('Localization settings were updated', $old, $new);
+        }
+
+        if ($this->activeGroup === 'mail') {
+            $this->validate([
+                'mail_from_name'    => 'required|string|max:100',
+                'mail_from_address' => 'required|email',
+            ]);
+
+            $old = [
+                'from_name'    => Setting::get('from_name',    '', 'mail'),
+                'from_address' => Setting::get('from_address', '', 'mail'),
+            ];
+
+            Setting::set('from_name',    $this->mail_from_name,    'mail');
+            Setting::set('from_address', $this->mail_from_address, 'mail');
+
+            $this->logSettingsChange('Mail settings were updated', $old, [
+                'from_name'    => $this->mail_from_name,
+                'from_address' => $this->mail_from_address,
+            ]);
+        }
+
+        if ($this->activeGroup === 'social') {
+            $old = [
+                'facebook'       => Setting::get('facebook',       '', 'social'),
+                'facebook_group' => Setting::get('facebook_group', '', 'social'),
+                'twitter'        => Setting::get('twitter',        '', 'social'),
+                'instagram'      => Setting::get('instagram',      '', 'social'),
+                'linkedin'       => Setting::get('linkedin',       '', 'social'),
+                'tiktok'         => Setting::get('tiktok',         '', 'social'),
+                'youtube'        => Setting::get('youtube',        '', 'social'),
+            ];
+
+            Setting::set('facebook',       $this->facebook,       'social');
+            Setting::set('facebook_group', $this->facebook_group, 'social');
+            Setting::set('twitter',        $this->twitter,        'social');
+            Setting::set('instagram',      $this->instagram,      'social');
+            Setting::set('linkedin',       $this->linkedin,       'social');
+            Setting::set('tiktok',         $this->tiktok,         'social');
+            Setting::set('youtube',        $this->youtube,        'social');
+
+            $this->logSettingsChange('Social settings were updated', $old, [
+                'facebook'       => $this->facebook,
+                'facebook_group' => $this->facebook_group,
+                'twitter'        => $this->twitter,
+                'instagram'      => $this->instagram,
+                'linkedin'       => $this->linkedin,
+                'tiktok'         => $this->tiktok,
+                'youtube'        => $this->youtube,
+            ]);
+        }
+
+        if ($this->activeGroup === 'contact') {
+            $this->validate([
+                'support_phone'     => 'nullable|string|max:30',
+                'support_whatsapp'  => 'nullable|string|max:30',
+                'support_messenger' => 'nullable|string|max:255',
+                'support_hours'     => 'nullable|string|max:100',
+            ]);
+
+            $keys = ['support_phone', 'support_whatsapp', 'support_messenger', 'support_hours'];
+            $old  = [];
+            $new  = [];
+
+            foreach ($keys as $key) {
+                $old[$key] = (string) Setting::get($key, '', 'contact');
+                $new[$key] = trim((string) $this->{$key});
+                Setting::set($key, $new[$key], 'contact');
+            }
+
+            $this->logSettingsChange('Contact settings were updated', $old, $new);
+        }
+
+        if ($this->activeGroup === 'registration') {
+            $old = [
+                'allow_registration'   => (bool) Setting::get('allow_registration',   '1', 'registration'),
+                'restrict_by_country'  => (bool) Setting::get('restrict_by_country',  '0', 'registration'),
+                'require_email_verify' => (bool) Setting::get('require_email_verify', '0', 'registration'),
+            ];
+
+            Setting::set('allow_registration',   $this->allow_registration   ? '1' : '0', 'registration');
+            Setting::set('restrict_by_country',  $this->restrict_by_country  ? '1' : '0', 'registration');
+            Setting::set('require_email_verify', $this->require_email_verify ? '1' : '0', 'registration');
+            Setting::forgetGroup('registration');
+
+            $this->logSettingsChange('Registration settings were updated', $old, [
+                'allow_registration'   => $this->allow_registration,
+                'restrict_by_country'  => $this->restrict_by_country,
+                'require_email_verify' => $this->require_email_verify,
+            ]);
+        }
+
+        if ($this->activeGroup === 'pricing') {
+            $this->validate([
+                'min_margin_percent' => 'required|numeric|min:0|max:100',
+            ]);
+
+            $old = ['min_margin_percent' => Setting::get('min_margin_percent', '15', 'pricing')];
+
+            Setting::set('min_margin_percent', $this->min_margin_percent, 'pricing');
+
+            $this->logSettingsChange('Pricing settings were updated', $old, [
+                'min_margin_percent' => $this->min_margin_percent,
+            ]);
+        }
+
+        if ($this->activeGroup === 'marketing') {
+            $registeredDestinations = (new DestinationRegistry())->keys();
+
+            $this->validate([
+                'meta_pixel_id'             => 'nullable|string|max:100',
+                'meta_access_token'         => 'nullable|string|max:1000',
+                'meta_api_version'          => 'nullable|string|max:20',
+                'meta_test_event_code'      => 'nullable|string|max:100',
+                'gtm_container_id'          => 'nullable|string|max:50|required_if:gtm_enabled,true',
+                'tiktok_pixel_id'           => 'nullable|string|max:100',
+                'ga4_measurement_id'        => 'nullable|string|max:50',
+                'server_destinations'       => 'nullable|string',
+                'session_timeout_minutes'   => 'required|numeric|min:1',
+                'attribution_lifetime_days' => 'required|numeric|min:1',
+            ]);
+
+            $destinationKeys = array_filter(array_map('trim', explode(',', $this->server_destinations)));
+            $unknown = array_diff($destinationKeys, $registeredDestinations);
+
+            if (! empty($unknown)) {
+                $this->addError('server_destinations', 'Unknown destination(s): '.implode(', ', $unknown).'. Available: '.implode(', ', $registeredDestinations).'.');
+
+                return;
+            }
+
+            $marketingFields = [
+                'meta_pixel_id', 'meta_access_token', 'meta_api_version', 'meta_test_event_code',
+                'gtm_container_id', 'tiktok_pixel_id', 'ga4_measurement_id', 'server_destinations',
+                'session_timeout_minutes', 'attribution_lifetime_days',
+            ];
+
+            $old = ['gtm_enabled' => (bool) Setting::get('gtm_enabled', '0', 'marketing')];
+            foreach ($marketingFields as $field) {
+                $old[$field] = Setting::get($field, null, 'marketing');
+            }
+
+            Setting::set('gtm_enabled', $this->gtm_enabled ? '1' : '0', 'marketing');
+            foreach ($marketingFields as $field) {
+                Setting::set($field, $this->$field, 'marketing');
+            }
+
+            $new = ['gtm_enabled' => $this->gtm_enabled];
+            foreach ($marketingFields as $field) {
+                $new[$field] = $this->$field;
+            }
+
+            $this->logSettingsChange('Marketing settings were updated', $old, $new);
+        }
+
+        if ($this->activeGroup === 'custom_code') {
+            // Raw HTML/JS on every storefront page — the route itself only
+            // checks panel access, so gate this group explicitly.
+            if (! auth()->user()->can('site_settings.manage')) {
+                abort(403, 'Unauthorized action.');
+            }
+
+            // settings.value is a TEXT column (65,535 bytes); 16k chars stays
+            // under that even if every char is 4-byte UTF-8 (Bangla is 3).
+            $this->validate([
+                'head_code'       => 'nullable|string|max:16000',
+                'body_start_code' => 'nullable|string|max:16000',
+                'body_end_code'   => 'nullable|string|max:16000',
+            ]);
+
+            $keys = ['head_code', 'body_start_code', 'body_end_code'];
+            $old  = [];
+            $new  = [];
+
+            foreach ($keys as $key) {
+                $old[$key] = $this->customCodeSetting($key);
+                $new[$key] = trim((string) $this->{$key});
+                $this->{$key} = $new[$key];
+                Setting::set($key, $new[$key], 'custom_code');
+            }
+
+            $this->logSettingsChange('Custom code was updated', $old, $new);
+        }
+
+        if ($this->activeGroup === 'queue') {
+            $old = [
+                'notes' => Setting::get('notes', '', 'queue'),
+                'cron_supervisor_path' => Setting::get('cron_supervisor_path', '', 'queue'),
+            ];
+
+            Setting::set('notes', $this->queue_notes, 'queue');
+            Setting::set('cron_supervisor_path', $this->queue_cron_supervisor_path, 'queue');
+
+            $this->logSettingsChange('Queue notes were updated', $old, [
+                'notes' => $this->queue_notes,
+                'cron_supervisor_path' => $this->queue_cron_supervisor_path,
+            ]);
+        }
+
+        if ($this->activeGroup === 'modules') {
+            // Re-enforce the dependency chain server-side in case the client
+            // state ever gets out of sync with the live wire:click cascade.
+            if (! $this->purchase_enabled) {
+                $this->inventory_enabled = false;
+            }
+            if (! $this->inventory_enabled) {
+                $this->accounts_enabled = false;
+            }
+            if ($this->accounts_enabled) {
+                $this->inventory_enabled = true;
+            }
+            if ($this->inventory_enabled) {
+                $this->purchase_enabled = true;
+            }
+
+            $old = [
+                'purchase_enabled'  => (bool) Setting::get('purchase_enabled',  '0', 'modules'),
+                'inventory_enabled' => (bool) Setting::get('inventory_enabled', '0', 'modules'),
+                'accounts_enabled'  => (bool) Setting::get('accounts_enabled',  '0', 'modules'),
+                'marketing_enabled' => (bool) Setting::get('marketing_enabled', '0', 'modules'),
+            ];
+
+            Setting::set('purchase_enabled',  $this->purchase_enabled  ? '1' : '0', 'modules');
+            Setting::set('inventory_enabled', $this->inventory_enabled ? '1' : '0', 'modules');
+            Setting::set('accounts_enabled',  $this->accounts_enabled  ? '1' : '0', 'modules');
+            Setting::set('marketing_enabled', $this->marketing_enabled ? '1' : '0', 'modules');
+            Setting::forgetGroup('modules');
+
+            // Carry each simple product's balance across to whichever side
+            // (inventory_stocks vs. products.stock_quantity) is now the
+            // source of truth.
+            if ($old['inventory_enabled'] !== $this->inventory_enabled) {
+                app(StockService::class)->syncSimpleProductStockForModuleToggle();
+                app(StockService::class)->syncVariantStockForModuleToggle();
+            }
+
+            $this->logSettingsChange('Module settings were updated', $old, [
+                'purchase_enabled'  => $this->purchase_enabled,
+                'inventory_enabled' => $this->inventory_enabled,
+                'accounts_enabled'  => $this->accounts_enabled,
+                'marketing_enabled' => $this->marketing_enabled,
+            ]);
+        }
+
+        if ($this->activeGroup === 'media') {
+            $this->validate([
+                'thumbnail_width'   => 'required|integer|min:50|max:1000',
+                'thumbnail_quality' => 'required|integer|min:1|max:100',
+            ]);
+
+            $old = [
+                'thumbnail_enabled' => (bool) Setting::get('thumbnail_enabled', config('media.thumbnail.enabled'), 'media'),
+                'thumbnail_width'   => Setting::get('thumbnail_width',   config('media.thumbnail.width'),   'media'),
+                'thumbnail_format'  => Setting::get('thumbnail_format',  config('media.thumbnail.format'),  'media'),
+                'thumbnail_quality' => Setting::get('thumbnail_quality', config('media.thumbnail.quality'), 'media'),
+            ];
+
+            Setting::set('thumbnail_enabled', $this->thumbnail_enabled ? '1' : '0', 'media');
+            Setting::set('thumbnail_width',   $this->thumbnail_width,   'media');
+            Setting::set('thumbnail_format',  $this->thumbnail_format,  'media');
+            Setting::set('thumbnail_quality', $this->thumbnail_quality, 'media');
+
+            $this->logSettingsChange('Media settings were updated', $old, [
+                'thumbnail_enabled' => $this->thumbnail_enabled,
+                'thumbnail_width'   => $this->thumbnail_width,
+                'thumbnail_format'  => $this->thumbnail_format,
+                'thumbnail_quality' => $this->thumbnail_quality,
+            ]);
+        }
+
+        $this->dispatch('toast', ['type' => 'success', 'message' => 'Settings saved successfully']);
+    }
+
+    /**
+     * Setting::get() json-decodes values, so a snippet that happens to be a
+     * bare JSON object/array comes back as a PHP array — treat that as empty
+     * rather than letting a (string) cast throw.
+     */
+    private function customCodeSetting(string $key): string
+    {
+        $value = Setting::get($key, '', 'custom_code');
+
+        return is_string($value) ? $value : '';
+    }
+
+    private function logSettingsChange(string $description, array $old, array $new): void
+    {
+        $changed = array_filter(array_keys($new), fn ($k) => ($old[$k] ?? null) != ($new[$k] ?? null));
+
+        if (empty($changed)) {
+            return;
+        }
+
+        activity('settings')
+            ->causedBy(auth()->user())
+            ->withProperties([
+                'old'        => array_intersect_key($old, array_flip($changed)),
+                'attributes' => array_intersect_key($new, array_flip($changed)),
+            ])
+            ->event('updated')
+            ->log($description);
+    }
+
+    public function render()
+    {
+        return view('livewire.admin.site-settings.site-settings', [
+            'languages'  => Language::active()->ordered()->get(),
+            'currencies' => Currency::ordered()->get(),
+            'units'      => Units::options(),
+            'convertibleUnits' => array_intersect_key(Units::options(), array_flip(Units::sameKind($this->default_unit))),
+            'countries'  => Country::active()->orderBy('name')->get(),
+            'availableDestinations' => (new DestinationRegistry())->keys(),
+            'queueConnection' => config('queue.default'),
+            'queueFailedDriver' => config('queue.failed.driver'),
+            'queueName' => config('queue.connections.'.config('queue.default').'.queue', 'default'),
+        ])->layout('layouts.admin.admin');
+    }
+
+    private function loadSettings(): void
+    {
+        $this->site_name        = Setting::get('site_name',       'Laravel Starter Kit');
+        $this->site_short_name  = Setting::get('site_short_name', '');
+        $this->site_tagline     = Setting::get('site_tagline',    '');
+
+        $this->maintenance_mode = app()->isDownForMaintenance();
+
+        $this->company_name          = Setting::get('company_name',          '', 'company');
+        $this->company_legal_name    = Setting::get('company_legal_name',    '', 'company');
+        $this->company_email         = Setting::get('company_email',         '', 'company');
+        $this->company_phone         = Setting::get('company_phone',         '', 'company');
+        $this->company_mobile        = Setting::get('company_mobile',        '', 'company');
+        $this->company_website       = Setting::get('company_website',       '', 'company');
+        $this->company_address       = Setting::get('company_address',       '', 'company');
+        $this->company_city          = Setting::get('company_city',          '', 'company');
+        $this->company_state         = Setting::get('company_state',         '', 'company');
+        $this->company_postal_code   = Setting::get('company_postal_code',   '', 'company');
+        $this->company_tax_number    = Setting::get('company_tax_number',    '', 'company');
+        $this->company_trade_license = Setting::get('company_trade_license', '', 'company');
+        $this->company_map_location  = Setting::get('company_map_location',  '', 'company');
+
+        $this->company_country_id = ($v = Setting::get('company_country_id', null, 'company')) ? (int) $v : null;
+        $this->company_logo       = ($v = Setting::get('company_logo',       null, 'company')) ? (int) $v : null;
+        $this->company_favicon    = ($v = Setting::get('company_favicon',    null, 'company')) ? (int) $v : null;
+
+        $this->site_logo        = ($v = Setting::get('site_logo'))        ? (int) $v : null;
+        $this->site_logo_black  = ($v = Setting::get('site_logo_black'))  ? (int) $v : null;
+        $this->site_logo_white  = ($v = Setting::get('site_logo_white'))  ? (int) $v : null;
+        $this->site_logo_symbol = ($v = Setting::get('site_logo_symbol')) ? (int) $v : null;
+        $this->site_favicon     = ($v = Setting::get('site_favicon'))     ? (int) $v : null;
+
+        $this->timezone         = Setting::get('timezone',        'Asia/Dhaka', 'localization');
+        $this->date_format      = Setting::get('date_format',     'd-m-Y',      'localization');
+        $this->time_format      = Setting::get('time_format',     'H:i',        'localization');
+        $this->currency         = Setting::get('currency',        'BDT',        'localization');
+        $this->currency_symbol  = Setting::get('currency_symbol', '৳',          'localization');
+        $this->number_format    = Setting::get('number_format',  '1,234.56',    'localization');
+        $this->default_unit     = Setting::get('default_unit',   'meter',       'localization');
+        $this->show_converted_unit = (bool) Setting::get('show_converted_unit', '0', 'localization');
+        $this->converted_unit   = (string) (Setting::get('converted_unit', '', 'localization') ?: (Units::sameKind($this->default_unit)[0] ?? ''));
+
+        $this->default_language_id = Language::where('is_default', true)->value('id');
+
+        $this->mail_from_name    = Setting::get('from_name',    'Laravel Starter Kit', 'mail');
+        $this->mail_from_address = Setting::get('from_address', '', 'mail');
+
+        $this->facebook       = (string) Setting::get('facebook',       '', 'social');
+        $this->facebook_group = (string) Setting::get('facebook_group', '', 'social');
+        $this->twitter        = (string) Setting::get('twitter',        '', 'social');
+        $this->instagram      = (string) Setting::get('instagram',      '', 'social');
+        $this->linkedin       = (string) Setting::get('linkedin',       '', 'social');
+        $this->tiktok         = (string) Setting::get('tiktok',         '', 'social');
+        $this->youtube        = (string) Setting::get('youtube', '', 'social');
+
+        $this->support_phone     = (string) Setting::get('support_phone',     '', 'contact');
+        $this->support_whatsapp  = (string) Setting::get('support_whatsapp',  '', 'contact');
+        $this->support_messenger = (string) Setting::get('support_messenger', '', 'contact');
+        $this->support_hours     = (string) Setting::get('support_hours',     '', 'contact');
+
+        $this->allow_registration   = (bool) Setting::get('allow_registration',   '1', 'registration');
+        $this->restrict_by_country  = (bool) Setting::get('restrict_by_country',  '0', 'registration');
+        $this->require_email_verify = (bool) Setting::get('require_email_verify', '0', 'registration');
+
+        $this->min_margin_percent = Setting::get('min_margin_percent', '15', 'pricing');
+
+        $this->meta_pixel_id             = Setting::get('meta_pixel_id',             '',      'marketing');
+        $this->meta_access_token         = Setting::get('meta_access_token',         '',      'marketing');
+        $this->meta_api_version          = Setting::get('meta_api_version',          'v23.0', 'marketing');
+        $this->meta_test_event_code      = Setting::get('meta_test_event_code',      '',      'marketing');
+        $this->gtm_enabled               = (bool) Setting::get('gtm_enabled',        '0',     'marketing');
+        $this->gtm_container_id          = Setting::get('gtm_container_id',          '',      'marketing');
+        $this->tiktok_pixel_id           = Setting::get('tiktok_pixel_id',           '',      'marketing');
+        $this->ga4_measurement_id        = Setting::get('ga4_measurement_id',        '',      'marketing');
+        $this->server_destinations       = Setting::get('server_destinations',       'meta',  'marketing');
+        $this->session_timeout_minutes   = Setting::get('session_timeout_minutes',   '30',    'marketing');
+        $this->attribution_lifetime_days = Setting::get('attribution_lifetime_days', '90',    'marketing');
+
+        $this->head_code       = $this->customCodeSetting('head_code');
+        $this->body_start_code = $this->customCodeSetting('body_start_code');
+        $this->body_end_code   = $this->customCodeSetting('body_end_code');
+
+        $this->queue_notes = Setting::get('notes', '', 'queue');
+        $this->queue_cron_supervisor_path = Setting::get('cron_supervisor_path', '', 'queue');
+
+        $this->thumbnail_enabled = (bool) Setting::get('thumbnail_enabled', config('media.thumbnail.enabled'), 'media');
+        $this->thumbnail_width   = (int) Setting::get('thumbnail_width',   config('media.thumbnail.width'),   'media');
+        $this->thumbnail_format  = Setting::get('thumbnail_format',        config('media.thumbnail.format'),  'media');
+        $this->thumbnail_quality = (int) Setting::get('thumbnail_quality', config('media.thumbnail.quality'), 'media');
+
+        $this->purchase_enabled  = (bool) Setting::get('purchase_enabled',  '0', 'modules');
+        $this->inventory_enabled = (bool) Setting::get('inventory_enabled', '0', 'modules');
+        $this->accounts_enabled  = (bool) Setting::get('accounts_enabled',  '0', 'modules');
+        $this->marketing_enabled = (bool) Setting::get('marketing_enabled', '0', 'modules');
+    }
+}

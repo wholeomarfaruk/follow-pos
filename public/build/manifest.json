@@ -1,0 +1,139 @@
+{
+  "_fancybox-D7x6Cxtm.js": {
+    "file": "assets/fancybox-D7x6Cxtm.js",
+    "name": "fancybox",
+    "css": [
+      "assets/fancybox-DT4f8r2K.css"
+    ]
+  },
+  "_fancybox-DT4f8r2K.css": {
+    "file": "assets/fancybox-DT4f8r2K.css",
+    "src": "_fancybox-DT4f8r2K.css"
+  },
+  "_navigation-C0WW7OKH.css": {
+    "file": "assets/navigation-C0WW7OKH.css",
+    "src": "_navigation-C0WW7OKH.css"
+  },
+  "_sortable-BO2gS9_2.css": {
+    "file": "assets/sortable-BO2gS9_2.css",
+    "src": "_sortable-BO2gS9_2.css"
+  },
+  "_sortable.esm-DhTXR9hL.js": {
+    "file": "assets/sortable.esm-DhTXR9hL.js",
+    "name": "sortable.esm",
+    "imports": [
+      "_fancybox-D7x6Cxtm.js"
+    ],
+    "css": [
+      "assets/sortable-BO2gS9_2.css"
+    ]
+  },
+  "node_modules/boxicons/fonts/boxicons.eot": {
+    "file": "assets/boxicons-CSrLvhY_.eot",
+    "src": "node_modules/boxicons/fonts/boxicons.eot"
+  },
+  "node_modules/boxicons/fonts/boxicons.svg": {
+    "file": "assets/boxicons-Dp7W9qN3.svg",
+    "src": "node_modules/boxicons/fonts/boxicons.svg"
+  },
+  "node_modules/boxicons/fonts/boxicons.ttf": {
+    "file": "assets/boxicons-EIQNrSje.ttf",
+    "src": "node_modules/boxicons/fonts/boxicons.ttf"
+  },
+  "node_modules/boxicons/fonts/boxicons.woff": {
+    "file": "assets/boxicons-CTVby2V1.woff",
+    "src": "node_modules/boxicons/fonts/boxicons.woff"
+  },
+  "node_modules/boxicons/fonts/boxicons.woff2": {
+    "file": "assets/boxicons-CeGEncwm.woff2",
+    "src": "node_modules/boxicons/fonts/boxicons.woff2"
+  },
+  "resources/css/admin.css": {
+    "file": "assets/app-Ce1ZAmTP.css",
+    "src": "resources/css/app.css",
+    "isEntry": true,
+    "name": "admin",
+    "names": [
+      "app.css",
+      "admin.css"
+    ]
+  },
+  "resources/css/app.css": {
+    "file": "assets/app-Ce1ZAmTP.css",
+    "src": "resources/css/app.css",
+    "isEntry": true,
+    "name": "admin",
+    "names": [
+      "app.css",
+      "admin.css"
+    ]
+  },
+  "resources/ecomx-anyniche/js/app.js": {
+    "file": "assets/app-BRjOio29.js",
+    "name": "app",
+    "src": "resources/ecomx-anyniche/js/app.js",
+    "isEntry": true,
+    "imports": [
+      "_fancybox-D7x6Cxtm.js"
+    ],
+    "css": [
+      "assets/navigation-C0WW7OKH.css"
+    ]
+  },
+  "resources/ecomx-anyniche/scss/app.scss": {
+    "file": "assets/app-yKdKOhQ1.css",
+    "src": "resources/ecomx-anyniche/scss/app.scss",
+    "isEntry": true,
+    "name": "app",
+    "names": [
+      "app.css"
+    ]
+  },
+  "resources/ecomx-fashion/js/app.js": {
+    "file": "assets/app-Co7rzUnZ.js",
+    "name": "app",
+    "src": "resources/ecomx-fashion/js/app.js",
+    "isEntry": true,
+    "imports": [
+      "_fancybox-D7x6Cxtm.js"
+    ],
+    "css": [
+      "assets/navigation-C0WW7OKH.css"
+    ]
+  },
+  "resources/ecomx-fashion/scss/app.scss": {
+    "file": "assets/app-frn3Qk02.css",
+    "src": "resources/ecomx-fashion/scss/app.scss"
+  },
+  "resources/js/admin.js": {
+    "file": "assets/admin-Bp3gOOkA.js",
+    "name": "admin",
+    "src": "resources/js/admin.js",
+    "isEntry": true,
+    "imports": [
+      "_sortable.esm-DhTXR9hL.js",
+      "_fancybox-D7x6Cxtm.js"
+    ],
+    "css": [
+      "assets/admin-BZcD0lma.css"
+    ]
+  },
+  "resources/js/app.js": {
+    "file": "assets/app-2AAa27-7.js",
+    "name": "app",
+    "src": "resources/js/app.js",
+    "isEntry": true,
+    "imports": [
+      "_sortable.esm-DhTXR9hL.js",
+      "_fancybox-D7x6Cxtm.js"
+    ]
+  },
+  "resources/sass/admin.scss": {
+    "file": "assets/admin-tn0RQdqM.css",
+    "src": "resources/sass/admin.scss"
+  },
+  "resources/sass/app.scss": {
+    "file": "assets/app-PPsI0JRQ.css",
+    "src": "resources/sass/app.scss"
+  }
+}

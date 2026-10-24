@@ -1,0 +1,44 @@
+<?php
+
+namespace App\Support\EcomxAnyniche;
+
+/**
+ * Helper for the currently active theme package (see ThemeRegistry, which
+ * discovers installed themes and tracks which one is active). Centralizes
+ * theme-relative paths so nothing hardcodes 'ecomx-anyniche' directly.
+ */
+class ActiveTheme
+{
+    public static function slug(): string
+    {
+        return ThemeRegistry::active();
+    }
+
+    /** Absolute path to public/{theme}/... */
+    public static function publicPath(string $relative = ''): string
+    {
+        return public_path(static::slug() . ($relative !== '' ? '/' . ltrim($relative, '/') : ''));
+    }
+
+    /** Absolute path to resources/{theme}/... */
+    public static function resourcePath(string $relative = ''): string
+    {
+        return resource_path(static::slug() . ($relative !== '' ? '/' . ltrim($relative, '/') : ''));
+    }
+
+    /**
+     * Absolute path to storage/app/private/themes/{theme}/... — for admin-edited
+     * runtime state (git-ignored, never web-served), so a deploy's git pull
+     * never conflicts with or overwrites what the admin changed on the server.
+     */
+    public static function storagePath(string $relative = ''): string
+    {
+        return storage_path('app/private/themes/' . static::slug() . ($relative !== '' ? '/' . ltrim($relative, '/') : ''));
+    }
+
+    /** Livewire tag namespace prefix, e.g. 'ecomx-anyniche.sections'. */
+    public static function livewireNamespace(string $suffix = 'sections'): string
+    {
+        return static::slug() . '.' . $suffix;
+    }
+}

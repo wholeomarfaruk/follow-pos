@@ -1,0 +1,310 @@
+<?php
+
+namespace App\Models;
+
+use App\Actions\Sales\SendOrderProcessingSms;
+use App\Enums\Sales\CourierStatus;
+use App\Enums\Sales\FulfillmentStatus;
+use App\Enums\Sales\OrderPaymentType;
+use App\Enums\Sales\OrderSource;
+use App\Enums\Sales\OrderStatus;
+use App\Enums\Sales\PaymentStatus;
+use App\Support\PhoneNumber;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Database\Eloquent\Relations\MorphMany;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Route;
+
+class Order extends Model
+{
+    protected $fillable = [
+        'customer_id', 'source',
+        'status', 'payment_status', 'fulfillment_status',
+        'currency',
+        'subtotal', 'discount_amount', 'shipping_amount', 'shipping_discount', 'tax_amount', 'charges_amount',
+        'shipping_zone_id', 'shipping_method_id', 'shipping_meta',
+        'total_amount', 'paid_amount', 'due_amount',
+        'customer_note', 'admin_note',
+        'billing_address_id', 'shipping_address_id', 'coupon_id', 'coupon_code',
+        'placed_at', 'confirmed_at', 'completed_at', 'cancelled_at',
+        'courier_provider', 'courier_tracking_number', 'courier_charge',
+        'courier_status', 'courier_meta', 'courier_status_updated_at',
+    ];
+
+    protected function casts(): array
+    {
+        return [
+            'source'             => OrderSource::class,
+            'status'             => OrderStatus::class,
+            'payment_status'     => PaymentStatus::class,
+            'fulfillment_status' => FulfillmentStatus::class,
+            'courier_status'     => CourierStatus::class,
+            'courier_meta'       => 'array',
+            'shipping_meta'      => 'array',
+            'subtotal'         => 'decimal:2',
+            'discount_amount'    => 'decimal:2',
+            'shipping_amount'    => 'decimal:2',
+            'shipping_discount'  => 'decimal:2',
+            'tax_amount'         => 'decimal:2',
+            'charges_amount'     => 'decimal:2',
+            'total_amount'       => 'decimal:2',
+            'paid_amount'        => 'decimal:2',
+            'due_amount'         => 'decimal:2',
+            'courier_charge'     => 'decimal:2',
+            'placed_at'                => 'datetime',
+            'confirmed_at'              => 'datetime',
+            'completed_at'              => 'datetime',
+            'cancelled_at'              => 'datetime',
+            'courier_status_updated_at' => 'datetime',
+            'processing_sms_sent_at'    => 'datetime',
+        ];
+    }
+
+    protected static function booted(): void
+    {
+        // Every path into Processing (courier booking, manual tracking entry,
+        // the status dropdown) texts the customer — after commit, so a
+        // just-booked shipment's tracking link is already there.
+        static::updated(function (Order $order) {
+            if ($order->wasChanged('status') && $order->status === OrderStatus::PROCESSING) {
+                DB::afterCommit(fn () => app(SendOrderProcessingSms::class)->handle($order));
+            }
+        });
+    }
+
+    public function customer(): BelongsTo
+    {
+        return $this->belongsTo(Customer::class);
+    }
+
+    public function billingAddress(): BelongsTo
+    {
+        return $this->belongsTo(DeliveryAddress::class, 'billing_address_id');
+    }
+
+    public function shippingAddress(): BelongsTo
+    {
+        return $this->belongsTo(DeliveryAddress::class, 'shipping_address_id');
+    }
+
+    public function shippingZone(): BelongsTo
+    {
+        return $this->belongsTo(ShippingZone::class);
+    }
+
+    public function shippingMethod(): BelongsTo
+    {
+        return $this->belongsTo(ShippingMethod::class);
+    }
+
+    public function items(): HasMany
+    {
+        return $this->hasMany(OrderItem::class);
+    }
+
+    public function payments(): HasMany
+    {
+        return $this->hasMany(OrderPayment::class);
+    }
+
+    /**
+     * Customer-facing payment picture for the storefront track page.
+     * 'verifying' = a payment the customer sent (e.g. bKash with a TrxID)
+     * is still pending admin confirmation. Rejected payments only show
+     * while the order is still owed money — once paid, they're history.
+     *
+     * @return array{state: string, total: float, paid: float, due: float, pending: \Illuminate\Support\Collection, rejected: \Illuminate\Support\Collection}
+     */
+    public function paymentSummary(): array
+    {
+        $payments = $this->payments->where('type', OrderPaymentType::PAYMENT);
+
+        $paid = (float) $this->paid_amount;
+        $due = (float) $this->due_amount;
+        $pending = $payments->where('status', PaymentStatus::PENDING)->values();
+
+        $state = match (true) {
+            $paid > 0 && $due <= 0 => 'paid',
+            $pending->isNotEmpty() => 'verifying',
+            $paid > 0 => 'partial',
+            default => 'unpaid',
+        };
+
+        return [
+            'state' => $state,
+            'total' => (float) $this->total_amount,
+            'paid' => $paid,
+            'due' => $due,
+            'pending' => $pending,
+            'rejected' => $due > 0 ? $payments->where('status', PaymentStatus::FAILED)->values() : collect(),
+        ];
+    }
+
+    /** Named extra charges (gift wrap, COD fee, …) — summed into charges_amount by recalculateTotals(). */
+    public function charges(): HasMany
+    {
+        return $this->hasMany(OrderCharge::class);
+    }
+
+    /** Offers this order was placed with (see App\Services\OfferService). */
+    public function offers(): HasMany
+    {
+        return $this->hasMany(OrderOffer::class);
+    }
+
+    public function coupon(): BelongsTo
+    {
+        return $this->belongsTo(Coupon::class);
+    }
+
+    public function courierShipments(): HasMany
+    {
+        return $this->hasMany(CourierShipment::class)->latest();
+    }
+
+    /**
+     * Values for an order SMS template's {placeholders} — see the list on
+     * Admin > SMS > Templates. Courier fields come from the newest
+     * non-cancelled shipment; {tracking_url} is that courier's own public
+     * tracking page (CourierShipment::trackingUrl()), blank if it has none.
+     *
+     * @return array<string, string>
+     */
+    public function smsPlaceholders(): array
+    {
+        $shipment = $this->courierShipments
+            ->first(fn (CourierShipment $s) => ($s->tracking_number || $s->consignment_id) && $s->statusEnum() !== CourierStatus::CANCELLED);
+
+        return [
+            'order_id' => (string) $this->id,
+            'customer_name' => (string) ($this->shippingAddress?->name ?? $this->customer?->full_name ?? ''),
+            'amount' => number_format((float) $this->total_amount, 2),
+            'paid' => number_format((float) $this->paid_amount, 2),
+            'due' => number_format((float) $this->due_amount, 2),
+            'status' => $this->status->label(),
+            'courier' => (string) ($shipment?->courier?->name ?? $this->courier_provider ?? ''),
+            'tracking_number' => (string) ($shipment?->consignment_id ?: $shipment?->tracking_number ?: $this->courier_tracking_number ?? ''),
+            'tracking_url' => (string) ($shipment?->trackingUrl() ?? ''),
+            'website_tracking_url' => (string) ($this->websiteTrackingUrl() ?? ''),
+        ];
+    }
+
+    /**
+     * This store's own track page, opened straight onto this order:
+     * /track?order_id=…&phone=… (both themes accept it — see
+     * OrderTrackLookup). Uses the customer's phone, since that's what the
+     * lookup matches. Only the active theme's routes are registered, so
+     * whichever track route exists is the live one.
+     */
+    public function websiteTrackingUrl(): ?string
+    {
+        $phone = $this->customer?->phone;
+        $route = collect(['ecomx-fashion.track', 'ecomx-anyniche.track'])->first(fn ($name) => Route::has($name));
+
+        if (! $phone || ! $route) {
+            return null;
+        }
+
+        return route($route, ['order_id' => $this->id, 'phone' => PhoneNumber::local(PhoneNumber::national($phone))]);
+    }
+
+    public function posSale(): HasOne
+    {
+        return $this->hasOne(PosSale::class);
+    }
+
+    /**
+     * Every journal entry ever posted with this order as its source (sale,
+     * COGS, shipping, advance conversion, return, reversal, ...) — the full
+     * accounting trail behind this order, used by the Order Ledger report.
+     */
+    public function journalEntries(): MorphMany
+    {
+        return $this->morphMany(JournalEntry::class, 'source');
+    }
+
+    public function recalculateTotals(): void
+    {
+        $itemsTotal = $this->items()->get()->sum(fn (OrderItem $item) => $item->is_gift ? 0 : (float) $item->total_amount);
+
+        // shipping_discount can never exceed shipping_amount or go negative,
+        // regardless of how it was set (e.g. a stale value from before the
+        // shipping amount was edited down).
+        $shippingDiscount = max(0.0, min((float) $this->shipping_amount, (float) $this->shipping_discount));
+        $netShipping       = (float) $this->shipping_amount - $shippingDiscount;
+
+        $paidIn  = $this->payments()->where('status', PaymentStatus::PAID)->where('type', OrderPaymentType::PAYMENT)->sum('amount');
+        $paidOut = $this->payments()->where('status', PaymentStatus::REFUNDED)->where('type', OrderPaymentType::REFUND)->sum('amount');
+
+        $chargesTotal = (float) $this->charges()->sum('amount');
+
+        $this->subtotal          = $itemsTotal;
+        $this->shipping_discount = $shippingDiscount;
+        $this->charges_amount    = $chargesTotal;
+        $this->total_amount      = $itemsTotal - $this->discount_amount + $netShipping + $this->tax_amount + $chargesTotal;
+        $this->paid_amount       = max(0, (float) $paidIn - (float) $paidOut);
+        $this->due_amount        = max(0, $this->total_amount - $this->paid_amount);
+        $this->save();
+    }
+
+    /**
+     * A delivered order with some items coming back is the leftover of a
+     * partial delivery — it stays DELIVERED with a partial fulfillment
+     * rather than becoming PARTIALLY_RETURNED.
+     */
+    public function syncReturnStatus(): void
+    {
+        $items = $this->items()->get();
+
+        if ($items->isEmpty()) {
+            return;
+        }
+
+        $anyReturned = $items->contains(fn (OrderItem $item) => (float) $item->returned_quantity > 0);
+        $allReturned = $items->every(fn (OrderItem $item) => (float) $item->returned_quantity >= (float) $item->quantity);
+
+        if ($allReturned) {
+            $this->status = OrderStatus::RETURNED;
+            $this->fulfillment_status = FulfillmentStatus::UNFULFILLED;
+        } elseif ($anyReturned && $this->status === OrderStatus::DELIVERED) {
+            $this->fulfillment_status = FulfillmentStatus::PARTIAL;
+        } elseif ($anyReturned) {
+            $this->status = OrderStatus::PARTIALLY_RETURNED;
+        }
+
+        $this->save();
+    }
+
+    /**
+     * Flips status to DELIVERED (fulfillment fulfilled or partial) based on
+     * item-level delivered_quantity — pure shipping-status tracking, mirrors
+     * syncReturnStatus(). Never changes stock or posts accounting. A no-op
+     * once the order is already closed (cancelled/returned/refunded), so a
+     * late delivery-tracking edit after close doesn't reopen it.
+     */
+    public function syncDeliveryStatus(): void
+    {
+        if ($this->status->isClosed()) {
+            return;
+        }
+
+        $items = $this->items()->get();
+
+        if ($items->isEmpty()) {
+            return;
+        }
+
+        $anyDelivered = $items->contains(fn (OrderItem $item) => (float) $item->delivered_quantity > 0);
+        $allDelivered = $items->every(fn (OrderItem $item) => (float) $item->delivered_quantity >= (float) $item->quantity);
+
+        if ($anyDelivered) {
+            $this->status = OrderStatus::DELIVERED;
+            $this->fulfillment_status = $allDelivered ? FulfillmentStatus::FULFILLED : FulfillmentStatus::PARTIAL;
+        }
+
+        $this->save();
+    }
+}

@@ -1,0 +1,113 @@
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\MorphMany;
+use Illuminate\Database\Eloquent\SoftDeletes;
+
+class Customer extends Model
+{
+    use SoftDeletes;
+
+    protected $fillable = [
+        'user_id', 'master_profile_id', 'customer_code',
+        'first_name', 'last_name', 'full_name',
+        'email', 'phone', 'alternative_phone',
+        'gender', 'date_of_birth',
+        'customer_group_id', 'default_courier_id',
+        'reward_points', 'wallet_balance',
+        'email_verified_at', 'phone_verified_at',
+        'status', 'notes', 'metadata',
+    ];
+
+    protected function casts(): array
+    {
+        return [
+            'date_of_birth'      => 'date',
+            'reward_points'      => 'decimal:2',
+            'wallet_balance'     => 'decimal:2',
+            'email_verified_at'  => 'datetime',
+            'phone_verified_at'  => 'datetime',
+            'metadata'           => 'array',
+        ];
+    }
+
+    protected static function booted(): void
+    {
+        // Keep the Master Profiles role list in sync wherever a customer is
+        // created or re-linked (storefront, POS, bulk orders, admin).
+        static::saved(function (Customer $customer) {
+            if ($customer->wasRecentlyCreated || $customer->wasChanged('master_profile_id')) {
+                MasterProfileRole::ensure($customer->master_profile_id, 'customer');
+            }
+        });
+    }
+
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
+    }
+
+    public function masterProfile(): BelongsTo
+    {
+        return $this->belongsTo(MasterProfile::class);
+    }
+
+    public function customerGroup(): BelongsTo
+    {
+        return $this->belongsTo(CustomerGroup::class);
+    }
+
+    public function defaultCourier(): BelongsTo
+    {
+        return $this->belongsTo(Courier::class, 'default_courier_id');
+    }
+
+    public function carts(): HasMany
+    {
+        return $this->hasMany(Cart::class);
+    }
+
+    public function combos(): HasMany
+    {
+        return $this->hasMany(Combo::class);
+    }
+
+    public function wishlists(): HasMany
+    {
+        return $this->hasMany(Wishlist::class);
+    }
+
+    public function orders(): HasMany
+    {
+        return $this->hasMany(Order::class);
+    }
+
+    public function deliveryAddresses(): HasMany
+    {
+        return $this->hasMany(DeliveryAddress::class);
+    }
+
+    public function couponCustomers(): HasMany
+    {
+        return $this->hasMany(CouponCustomer::class);
+    }
+
+    public function posSales(): HasMany
+    {
+        return $this->hasMany(PosSale::class);
+    }
+
+    public function blocks(): MorphMany
+    {
+        return $this->morphMany(Block::class, 'blockable');
+    }
+
+    public function devices(): HasMany
+    {
+        return $this->hasMany(Device::class);
+    }
+}

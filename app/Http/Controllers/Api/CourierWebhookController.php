@@ -1,0 +1,161 @@
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Actions\Accounts\PostCourierCodCollected;
+use App\Actions\Sales\ApplyCourierStatus;
+use App\Courier\CourierManager;
+use App\Enums\Sales\CourierStatus;
+use App\Http\Controllers\Controller;
+use App\Models\Courier;
+use App\Models\CourierShipment;
+use App\Models\CourierWebhookLog;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+
+/**
+ * Single inbound endpoint for every courier's status-update webhook,
+ * disambiguated by the {courier} slug in the URL
+ * (/api/webhooks/courier/steadfast, /api/webhooks/courier/pathao, ...).
+ * Every call is logged to courier_webhook_logs before anything else, even
+ * one that can't be matched to a shipment, so a courier's payload shape
+ * can always be inspected later. Matching/parsing is delegated to the
+ * courier's own driver (webhookIdentifier/parseWebhookEvent) so this
+ * controller never branches per courier — see CourierDriverInterface.
+ */
+class CourierWebhookController extends Controller
+{
+    public function handle(Request $request, string $courier): JsonResponse
+    {
+        $courierModel = Courier::where('slug', $courier)->orWhere('driver_key', $courier)->first();
+        $payload = $request->all();
+
+        $log = CourierWebhookLog::create([
+            'courier_id' => $courierModel?->id,
+            'event_type' => $payload['status'] ?? $payload['order_status'] ?? $payload['event'] ?? null,
+            'headers' => $request->headers->all(),
+            'payload' => $payload,
+            'status' => 'received',
+            'ip_address' => $request->ip(),
+        ]);
+
+        if (! $courierModel) {
+            $log->update(['status' => 'unmatched', 'error_message' => 'Unknown courier.']);
+
+            return response()->json(['message' => 'Unknown courier.'], 404);
+        }
+
+        // Pathao pings the registered URL with this event once when the
+        // webhook is being set up on their merchant dashboard, and expects
+        // this exact status/header/secret combination back to mark the
+        // integration verified — it isn't a real status update, so it must
+        // be answered before the shared secret check below (Pathao doesn't
+        // send our ?secret= on this verification call).
+        if ($courierModel->driver_key === 'pathao' && ($payload['event'] ?? null) === 'webhook_integration') {
+            $log->update(['status' => 'processed', 'event_type' => 'webhook_integration']);
+
+            return response()->json([
+                'message' => 'Webhook integrated',
+            ], 202)->header(
+                'X-Pathao-Merchant-Webhook-Integration-Secret',
+                'f3992ecc-59da-4cbe-a049-a13da2018d51'
+            );
+        }
+
+        // Most integrated couriers don't sign their webhook payloads, so
+        // this app generates its own secret (Courier > Settings) and
+        // requires it back as ?secret= on the URL registered with the
+        // courier — without this, anyone who discovers the endpoint could
+        // forge status updates for any shipment. Pathao is the exception:
+        // per their docs, it echoes the secret back verbatim in the
+        // X-PATHAO-Signature header on every call (not a real HMAC
+        // signature despite the name), rather than as a query string —
+        // Pathao's real webhook calls never carry ?secret=.
+        if ($courierModel->webhook_secret) {
+            $provided = $courierModel->driver_key === 'pathao'
+                ? (string) $request->header('X-PATHAO-Signature', '')
+                : (string) $request->query('secret', '');
+
+            if (! hash_equals($courierModel->webhook_secret, $provided)) {
+                $log->update([
+                    'status' => 'failed',
+                    'signature_status' => 'invalid',
+                    'error_message' => 'Missing or incorrect webhook secret.',
+                ]);
+
+                return response()->json(['message' => 'Unauthorized.'], 401);
+            }
+
+            $log->update(['signature_status' => 'valid']);
+        }
+
+        try {
+            $driver = app(CourierManager::class)->driverFor($courierModel->driver_key);
+            $identifier = $driver->webhookIdentifier($payload);
+            $shipment = $identifier ? $this->matchShipment($identifier) : null;
+            $event = $shipment ? $driver->parseWebhookEvent($payload) : null;
+        } catch (\Throwable $e) {
+            $log->update(['status' => 'failed', 'error_message' => $e->getMessage()]);
+
+            return response()->json(['message' => 'Webhook processing failed.'], 500);
+        }
+
+        if (! $shipment) {
+            $log->update(['status' => 'unmatched', 'error_message' => 'No matching shipment found.']);
+
+            return response()->json(['message' => 'Shipment not found.'], 404);
+        }
+
+        $log->update(['courier_shipment_id' => $shipment->id, 'status' => 'processed']);
+
+        if (! $event) {
+            return response()->json(['message' => 'ok']);
+        }
+
+        $shipment->trackingEvents()->create([
+            'status' => $event->status->value,
+            'raw_status' => $event->rawStatus,
+            'message' => $event->message,
+            'location' => $event->location,
+            'event_at' => $event->eventAt ?? now(),
+            'raw_data' => $event->rawData,
+        ]);
+
+        app(ApplyCourierStatus::class)->handle($shipment, $event->status);
+
+        // The courier's rider physically collected cash from the customer
+        // on delivery — that money is now sitting with the courier, not in
+        // a real bank/cash account, so record it as received into the
+        // courier's own cash-in-hand sub-account (1045.x) rather than
+        // waiting for the later bank settlement to be the first sign this
+        // order was ever paid.
+        //
+        // Same for any update that reports money collected: a partial
+        // delivery, or a paid return (Pathao "paid_return" — the customer
+        // refused the goods but paid the delivery charge).
+        $collectedAmount = (float) ($event->rawData['collected_amount'] ?? 0);
+
+        if ($collectedAmount > 0 && in_array($event->status, [CourierStatus::DELIVERED, CourierStatus::PARTIAL_DELIVERED, CourierStatus::RETURNING, CourierStatus::RETURNED], true)) {
+            $label = match ($event->status) {
+                CourierStatus::DELIVERED => 'on delivery',
+                CourierStatus::PARTIAL_DELIVERED => 'on partial delivery',
+                default => 'on paid return',
+            };
+
+            app(PostCourierCodCollected::class)->handle($shipment, $collectedAmount, now()->toDateString(), $label);
+        }
+
+        return response()->json(['message' => 'ok']);
+    }
+
+    /**
+     * @param array{by: 'tracking_number'|'order_id', value: string} $identifier
+     */
+    protected function matchShipment(array $identifier): ?CourierShipment
+    {
+        return match ($identifier['by']) {
+            'tracking_number' => CourierShipment::where('tracking_number', $identifier['value'])->first(),
+            'order_id' => CourierShipment::whereHas('order', fn ($q) => $q->where('id', $identifier['value']))->first(),
+        };
+    }
+}
