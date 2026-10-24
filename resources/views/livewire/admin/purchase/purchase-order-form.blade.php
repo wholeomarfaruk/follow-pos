@@ -269,7 +269,7 @@
                                     </div>
                                     <span class="block text-[11px] text-gray-400">{{ $grn->received_at?->format('d M, Y') }}</span>
                                 </div>
-                                <span class="text-sm tabular-nums text-gray-600 shrink-0"><x-qty :value="$grn->total_quantity" /> pcs</span>
+                                <span class="text-sm tabular-nums text-gray-600 shrink-0"><x-qty :value="$grn->total_quantity" /></span>
                             </a>
                         @endforeach
                     </div>

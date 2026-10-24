@@ -2,7 +2,7 @@
     $isOrder = $type === 'order';
     $title = $isOrder ? 'Purchase Order' : 'Receiving Checklist';
     $money = fn ($n) => $currency . number_format((float) $n, 2);
-    $qty = fn ($n) => rtrim(rtrim(number_format((float) $n, 3), '0'), '.');
+    $qty = fn ($n) => \App\Support\Units::text((float) $n); // "500 m", plus the converted unit when it's on
     $companyLine = collect([$company['address'], $company['city'], $company['state'], $company['postal_code']])->filter()->implode(', ');
     $supplier = $order->supplier;
 @endphp
