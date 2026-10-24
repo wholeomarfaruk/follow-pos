@@ -11,9 +11,12 @@ use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
 use App\Models\Setting;
 use App\Models\Supplier;
+use App\Models\SupplierInvoiceItem;
+use App\Services\Purchase\PurchaseOrderProgress;
 use App\Services\PurchasePriceHistoryService;
 use App\Services\StockService;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Livewire\Attributes\Computed;
 use Livewire\Component;
 
@@ -55,6 +58,12 @@ class PurchaseOrderForm extends Component
         $this->orderNumber = 'PO-' . str_pad((string) (PurchaseOrder::withTrashed()->max('id') + 1), 10, '0', STR_PAD_LEFT);
         $this->orderDate   = now()->format('Y-m-d');
         $this->addItem();
+
+        // "New Purchase Order" from a supplier's ledger: ?supplier=X
+        $supplierId = (int) request()->query('supplier');
+        if ($supplierId && Supplier::whereKey($supplierId)->exists()) {
+            $this->supplierId = (string) $supplierId;
+        }
     }
 
     protected function loadOrder(int $id): void
@@ -285,6 +294,26 @@ class PurchaseOrderForm extends Component
     {
         $this->validate();
 
+        if ($this->editingId) {
+            $existing = PurchaseOrder::with('items.product', 'invoices', 'receivings')->findOrFail($this->editingId);
+
+            if ($existing->isCancelled()) {
+                $this->dispatch('toast', ['type' => 'error', 'message' => 'A cancelled purchase order can\'t be edited.']);
+                return;
+            }
+
+            // Its supplier is fixed once anything was received or billed —
+            // those GRNs / invoices belong to the original supplier.
+            if ((int) $this->supplierId !== (int) $existing->supplier_id && ($existing->invoices->isNotEmpty() || $existing->receivings->isNotEmpty())) {
+                $this->addError('supplierId', 'This order already has receivings or invoices — its supplier can\'t change.');
+                return;
+            }
+
+            if (! $this->lockedLinesAreIntact($existing)) {
+                return;
+            }
+        }
+
         $data = [
             'order_number' => $this->orderNumber,
             'supplier_id'  => $this->supplierId,
@@ -293,42 +322,50 @@ class PurchaseOrderForm extends Component
             'notes'        => $this->notes ?: null,
         ];
 
-        if ($this->editingId) {
-            $order = PurchaseOrder::findOrFail($this->editingId);
-            $order->update($data);
-            $message = 'Purchase order updated';
-        } else {
-            $data['status'] = 'pending';
-            $order = PurchaseOrder::create($data);
-            $message = 'Purchase order created';
-        }
-
-        $keptItemIds = [];
-
-        foreach ($this->items as $item) {
-            $resolved  = $this->resolvePickerKey($item['variant_id']);
-            $quantity  = (float) $item['quantity'];
-            $unitPrice = $item['unit_price'] !== '' ? (float) $item['unit_price'] : null;
-
-            $itemData = [
-                'product_id'         => $resolved['product_id'],
-                'product_variant_id' => $resolved['product_variant_id'],
-                'quantity'           => $quantity,
-                'unit_price'         => $unitPrice,
-                'total_amount'       => $unitPrice !== null ? round($quantity * $unitPrice, 2) : null,
-            ];
-
-            if (! empty($item['id'])) {
-                $order->items()->whereKey($item['id'])->update($itemData);
-                $keptItemIds[] = $item['id'];
+        $order = DB::transaction(function () use ($data) {
+            if ($this->editingId) {
+                $order = PurchaseOrder::findOrFail($this->editingId);
+                $order->update($data);
             } else {
-                $newItem = $order->items()->create($itemData);
-                $keptItemIds[] = $newItem->id;
+                $data['status'] = 'pending';
+                $order = PurchaseOrder::create($data);
             }
-        }
 
-        // Remove any line items dropped from the form during an edit.
-        $order->items()->whereNotIn('id', $keptItemIds)->delete();
+            $keptItemIds = [];
+
+            foreach ($this->items as $item) {
+                $resolved  = $this->resolvePickerKey($item['variant_id']);
+                $quantity  = (float) $item['quantity'];
+                $unitPrice = $item['unit_price'] !== '' ? (float) $item['unit_price'] : null;
+
+                $itemData = [
+                    'product_id'         => $resolved['product_id'],
+                    'product_variant_id' => $resolved['product_variant_id'],
+                    'quantity'           => $quantity,
+                    'unit_price'         => $unitPrice,
+                    'total_amount'       => $unitPrice !== null ? round($quantity * $unitPrice, 2) : null,
+                ];
+
+                if (! empty($item['id'])) {
+                    $order->items()->whereKey($item['id'])->update($itemData);
+                    $keptItemIds[] = $item['id'];
+                } else {
+                    $newItem = $order->items()->create($itemData);
+                    $keptItemIds[] = $newItem->id;
+                }
+            }
+
+            // Remove any line items dropped from the form during an edit
+            // (lockedLinesAreIntact() already refused it for lines with
+            // receipts or invoices).
+            $order->items()->whereNotIn('id', $keptItemIds)->delete();
+
+            $this->syncReceivedStatus($order);
+
+            return $order;
+        });
+
+        $message = $this->editingId ? 'Purchase order updated' : 'Purchase order created';
 
         activity('purchase')
             ->causedBy(auth()->user())
@@ -340,6 +377,82 @@ class PurchaseOrderForm extends Component
 
         $this->editingId = $order->id;
         $this->loadOrder($order->id);
+    }
+
+    /**
+     * A PO line that already has stock received or invoice lines billed
+     * against it is what those GRNs / invoices point at, so the edit can't
+     * remove it, switch its product, or order less than was received.
+     * Adds the errors and returns false when the form breaks any of that.
+     */
+    protected function lockedLinesAreIntact(PurchaseOrder $order): bool
+    {
+        app(PurchaseOrderProgress::class)->attach(collect([$order]));
+
+        // Any invoice line counts — a return, or a line billed by amount
+        // with no quantity, still links here and would be orphaned too.
+        $invoicedLineIds = $order->items->isEmpty() ? collect() : SupplierInvoiceItem::whereIn('purchase_order_item_id', $order->items->pluck('id'))
+            ->distinct()
+            ->pluck('purchase_order_item_id')
+            ->map(fn ($id) => (int) $id);
+
+        $intact = true;
+
+        foreach ($order->items as $line) {
+            if ($line->received_quantity <= 0 && ! $invoicedLineIds->contains((int) $line->id)) {
+                continue;
+            }
+
+            $name = $line->product->name ?? 'A line';
+            $index = collect($this->items)->search(fn ($row) => (int) ($row['id'] ?? 0) === (int) $line->id);
+
+            if ($index === false) {
+                $this->addError('items', "{$name} already has stock received or billed — it can't be removed. Cancel the order instead if it won't arrive.");
+                $intact = false;
+                continue;
+            }
+
+            $resolved = $this->resolvePickerKey($this->items[$index]['variant_id']);
+            $lineVariantId = $line->product_variant_id ? (int) $line->product_variant_id : null;
+
+            // Cast both sides: the resolved ids come from model attributes,
+            // which the DB driver may hand back as strings.
+            $resolvedVariantId = $resolved['product_variant_id'] !== null ? (int) $resolved['product_variant_id'] : null;
+
+            if ((int) $resolved['product_id'] !== (int) $line->product_id || $resolvedVariantId !== $lineVariantId) {
+                $this->addError("items.{$index}.variant_id", 'Already received or billed — the product can\'t be changed.');
+                $intact = false;
+            }
+
+            if ((float) $this->items[$index]['quantity'] + 0.0005 < $line->received_quantity) {
+                $received = rtrim(rtrim(number_format($line->received_quantity, 3), '0'), '.');
+                $this->addError("items.{$index}.quantity", "{$received} already received — can't order less than that.");
+                $intact = false;
+            }
+        }
+
+        return $intact;
+    }
+
+    /**
+     * Quantities changed on an existing PO: one that was "received" goes back
+     * to "pending" if a line now has more to come, and a pending one flips to
+     * "received" if every line is now fully in.
+     */
+    protected function syncReceivedStatus(PurchaseOrder $order): void
+    {
+        $order->load('items');
+        $stock = app(StockService::class);
+
+        $fullyReceived = $order->items->isNotEmpty() && $order->items->every(
+            fn (PurchaseOrderItem $item) => $stock->receivedQuantityForPurchaseOrderItem($item) + 0.0005 >= (float) $item->quantity
+        );
+
+        if ($order->status === 'received' && ! $fullyReceived) {
+            $order->update(['status' => 'pending']);
+        } elseif ($order->status === 'pending' && $fullyReceived) {
+            $order->update(['status' => 'received']);
+        }
     }
 
     public function render(): mixed
@@ -373,18 +486,21 @@ class PurchaseOrderForm extends Component
         $order = null;
 
         if ($this->editingId) {
-            $order = PurchaseOrder::findOrFail($this->editingId);
-            $stockService = app(StockService::class);
+            $order = PurchaseOrder::with([
+                'supplier:id,name',
+                'items.product',
+                'items.variant',
+                'invoices' => fn ($q) => $q->orderByDesc('serial_number'),
+                'receivings' => fn ($q) => $q->orderByDesc('received_at'),
+            ])->findOrFail($this->editingId);
 
-            $receivingItems = PurchaseOrderItem::with('product', 'variant')
-                ->where('purchase_order_id', $this->editingId)
-                ->get();
+            app(PurchaseOrderProgress::class)->attach(collect([$order]));
 
-            $batchesByItemId = $this->receivedBatchesByPurchaseOrderItem($receivingItems);
+            $batchesByItemId = $this->receivedBatchesByPurchaseOrderItem($order->items);
 
-            $receivingItems = $receivingItems->map(function (PurchaseOrderItem $item) use ($stockService, $batchesByItemId) {
-                $item->received_so_far = $stockService->receivedQuantityForPurchaseOrderItem($item);
-                $item->remaining = max(0, (float) $item->quantity - $item->received_so_far);
+            $receivingItems = $order->items->map(function (PurchaseOrderItem $item) use ($batchesByItemId) {
+                $item->received_so_far = $item->received_quantity;
+                $item->remaining = max(0, (float) $item->quantity - $item->received_quantity);
                 $item->received_batches = $batchesByItemId->get($item->id, collect());
                 return $item;
             });

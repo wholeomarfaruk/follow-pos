@@ -10,14 +10,31 @@ enum SupplierInvoiceType: string
     case RETURN   = 'return';
 
     /**
-     * Purchase/return increase what is owed to the supplier (debit);
-     * advance/payment reduce it (credit).
+     * Only a purchase increases what is owed to the supplier (debit);
+     * advance/payment/return (goods sent back) reduce it (credit).
      */
     public function isDebit(): bool
     {
         return match ($this) {
-            self::PURCHASE, self::RETURN => true,
-            self::ADVANCE, self::PAYMENT => false,
+            self::PURCHASE => true,
+            self::ADVANCE, self::PAYMENT, self::RETURN => false,
+        };
+    }
+
+    /** Purchase and return carry product lines; advance/payment are a bare amount. */
+    public function usesItems(): bool
+    {
+        return in_array($this, [self::PURCHASE, self::RETURN], true);
+    }
+
+    /** Document title on the printed slip. */
+    public function documentTitle(): string
+    {
+        return match ($this) {
+            self::PURCHASE => 'Purchase Bill',
+            self::ADVANCE  => 'Advance Voucher',
+            self::PAYMENT  => 'Payment Voucher',
+            self::RETURN   => 'Purchase Return Note',
         };
     }
 

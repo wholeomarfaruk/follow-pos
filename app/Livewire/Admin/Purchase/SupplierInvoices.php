@@ -62,9 +62,17 @@ class SupplierInvoices extends Component
         $this->modalSupplierId = (string) $invoice->supplier_id;
     }
 
+    protected function selectInvoiceSupplier(int $supplierId): void
+    {
+        $this->modalSupplierId = (string) $supplierId;
+    }
+
     public function updatedModalSupplierId(): void
     {
+        // Clearing the PO also drops its lines, so the previous supplier's
+        // PO lines can't be saved onto this supplier's invoice.
         $this->purchaseOrderId = '';
+        $this->updatedPurchaseOrderId();
     }
 
     /**
@@ -92,11 +100,12 @@ class SupplierInvoices extends Component
     public function render(): mixed
     {
         $invoices = SupplierInvoice::query()
-            ->with('supplier')
+            ->with('supplier', 'purchaseOrder:id,order_number')
             ->withCount('items')
             ->when($this->search, fn ($q) => $q->where(fn ($w) => $w
                 ->where('invoice_number', 'like', "%{$this->search}%")
                 ->orWhere('notes', 'like', "%{$this->search}%")
+                ->orWhereHas('purchaseOrder', fn ($po) => $po->where('order_number', 'like', "%{$this->search}%"))
                 ->orWhereHas('supplier', fn ($s) => $s
                     ->where('name', 'like', "%{$this->search}%")
                     ->orWhere('code', 'like', "%{$this->search}%"))

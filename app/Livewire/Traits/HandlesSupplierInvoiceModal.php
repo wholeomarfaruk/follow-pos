@@ -6,10 +6,13 @@ use App\Actions\Accounts\PostJournalEntry;
 use App\Actions\Accounts\PostSupplierAdvance;
 use App\Actions\Accounts\PostSupplierBill;
 use App\Actions\Accounts\PostSupplierPayment;
+use App\Actions\Accounts\PostSupplierReturn;
+use App\Actions\Accounts\UnpostSupplierInvoice;
 use App\Enums\Accounts\TransactionType;
 use App\Enums\Purchase\SupplierInvoiceType;
 use App\Exceptions\Accounts\DuplicateJournalEntryException;
 use App\Exceptions\Purchase\SupplierInvoiceDeletionException;
+use App\Exceptions\Purchase\SupplierInvoiceLockedException;
 use App\Models\Account;
 use App\Models\AccountsSupplierBill;
 use App\Models\Product;
@@ -115,6 +118,41 @@ trait HandlesSupplierInvoiceModal
         $this->invoiceModal = true;
     }
 
+    /**
+     * Opens a fresh Purchase invoice pre-filled with whatever is still
+     * unbilled on the given PO — the PO page's "Create invoice" button lands
+     * here through the supplier ledger's ?purchase_order= deep link.
+     */
+    public function openInvoiceModalForPurchaseOrder(int $purchaseOrderId): void
+    {
+        $order = PurchaseOrder::find($purchaseOrderId);
+
+        if (! $order || $order->isCancelled()) {
+            return;
+        }
+
+        $this->openInvoiceModal();
+        $this->selectInvoiceSupplier($order->supplier_id);
+
+        // A fixed-supplier host (the ledger) can't switch supplier, so a PO
+        // of anyone else is ignored rather than billed to the wrong supplier.
+        if ((int) $this->invoiceSupplierId() !== (int) $order->supplier_id) {
+            return;
+        }
+
+        $this->purchaseOrderId = (string) $order->id;
+        $this->updatedPurchaseOrderId();
+    }
+
+    /**
+     * Hook for a host whose supplier is picked inside the modal (rather than
+     * fixed by the route) to select it. No-op by default.
+     */
+    protected function selectInvoiceSupplier(int $supplierId): void
+    {
+        //
+    }
+
     public function openEditInvoiceModal(int $id): void
     {
         $invoice = SupplierInvoice::with('items')->findOrFail($id);
@@ -143,6 +181,16 @@ trait HandlesSupplierInvoiceModal
             'amount'                 => (string) $item->amount,
         ])->all();
 
+        // An advance re-posts through the same cash account if its amount is
+        // edited, so start from the one it was originally paid from.
+        if ($invoice->type === SupplierInvoiceType::ADVANCE) {
+            $this->advanceCashAccountId = (string) ($invoice->journalEntries()
+                ->where('purpose', 'supplier_advance')
+                ->with('lines')
+                ->first()
+                ?->lines->firstWhere('credit', '>', 0)?->account_id ?? '');
+        }
+
         $this->afterOpenEditInvoiceModal($invoice);
 
         $this->resetValidation();
@@ -166,7 +214,7 @@ trait HandlesSupplierInvoiceModal
 
     public function updatedInvoiceType(): void
     {
-        if (! in_array($this->invoiceType, [SupplierInvoiceType::PURCHASE->value, SupplierInvoiceType::RETURN->value])) {
+        if (! $this->invoiceTypeUsesItems()) {
             $this->items = [];
             $this->purchaseOrderId = '';
             $this->markPaidNow = false;
@@ -189,24 +237,37 @@ trait HandlesSupplierInvoiceModal
         }
     }
 
+    protected function invoiceTypeUsesItems(): bool
+    {
+        return SupplierInvoiceType::tryFrom($this->invoiceType)?->usesItems() ?? false;
+    }
+
     /**
-     * Pulls in every line item of the selected purchase order as editable
-     * invoice lines — quantity/unit price/amount all pre-filled from the PO,
-     * but the admin can still add, remove, or change anything afterwards.
-     * Re-selecting a PO (or clearing it) replaces any PO-sourced lines
-     * already on the form without touching manually-added ones.
+     * Pulls in the selected purchase order's still-unbilled lines as editable
+     * invoice lines — quantity is what's left after earlier purchase invoices
+     * against the same PO line (fully billed lines are skipped), unit price
+     * comes from the PO; the admin can still add, remove, or change anything
+     * afterwards. Re-selecting a PO (or clearing it) replaces any PO-sourced
+     * lines already on the form without touching manually-added ones.
      */
     public function updatedPurchaseOrderId(): void
     {
         $this->items = collect($this->items)->filter(fn ($item) => $item['purchase_order_item_id'] === '')->values()->all();
+        $this->resetValidation('purchaseOrderId');
 
         if ($this->purchaseOrderId === '') {
             return;
         }
 
-        $order = PurchaseOrder::with('items.product', 'items.variant')->find($this->purchaseOrderId);
+        $order = PurchaseOrder::with([
+            'items' => fn ($q) => $q->withSum('purchaseInvoiceItems as invoiced_quantity', 'quantity'),
+            'items.product',
+            'items.variant.values.productAttributeValue.attributeValue',
+        ])->find($this->purchaseOrderId);
 
-        if (! $order) {
+        // purchaseOrderId is client-settable: only a live PO of the supplier
+        // this invoice is for may fill it.
+        if (! $order || $order->isCancelled() || (int) $order->supplier_id !== (int) $this->invoiceSupplierId()) {
             $this->purchaseOrderId = '';
             return;
         }
@@ -214,13 +275,18 @@ trait HandlesSupplierInvoiceModal
         $this->invoiceType = SupplierInvoiceType::PURCHASE->value;
 
         foreach ($order->items as $poItem) {
+            $quantity = round((float) $poItem->quantity - (float) $poItem->invoiced_quantity, 3);
+
+            if ($quantity <= 0) {
+                continue;
+            }
+
             $labels = $poItem->variant
                 ? $poItem->variant->values->map(fn ($v) => $v->productAttributeValue->attributeValue->value ?? '')->filter()->implode(' / ')
                 : '';
 
             $name = trim(($poItem->product->name ?? 'Unknown product') . ($labels ? " ({$labels})" : '') . ($poItem->variant ? " [{$poItem->variant->sku}]" : ''));
 
-            $quantity  = (float) $poItem->quantity;
             $unitPrice = $poItem->unit_price !== null ? (float) $poItem->unit_price : null;
             $amount    = $unitPrice !== null ? round($quantity * $unitPrice, 2) : (float) $poItem->total_amount;
 
@@ -232,6 +298,10 @@ trait HandlesSupplierInvoiceModal
                 'unit_price'             => $unitPrice !== null ? (string) $unitPrice : '',
                 'amount'                 => $amount > 0 ? (string) $amount : '',
             ];
+        }
+
+        if (! collect($this->items)->contains(fn ($item) => $item['purchase_order_item_id'] !== '')) {
+            $this->addError('purchaseOrderId', "Everything on {$order->order_number} is already billed.");
         }
     }
 
@@ -354,7 +424,7 @@ trait HandlesSupplierInvoiceModal
 
         $supplier = Supplier::findOrFail($this->invoiceSupplierId() ?: 0);
 
-        $usesItems = in_array($this->invoiceType, [SupplierInvoiceType::PURCHASE->value, SupplierInvoiceType::RETURN->value]);
+        $usesItems = $this->invoiceTypeUsesItems();
 
         $rules = [
             ...$this->extraInvoiceValidationRules(),
@@ -384,42 +454,43 @@ trait HandlesSupplierInvoiceModal
             return;
         }
 
-        $serial = ($supplier->invoices()->max('serial_number') ?? 0) + 1;
-
-        $invoice = SupplierInvoice::create([
-            'supplier_id'    => $supplier->id,
-            'serial_number'  => $serial,
-            'invoice_number' => $this->invoiceNumber ?: null,
-            'type'           => $this->invoiceType,
-            'amount'         => $amount,
-            'is_adjusted'    => $this->invoiceIsAdjusted,
-            'invoice_date'   => $this->invoiceDate ?: null,
-            'notes'          => $this->invoiceNotes ?: null,
-            'document_ids'   => $this->documentIds ?: null,
-        ]);
-
-        if ($usesItems) {
-            foreach ($this->items as $item) {
-                $invoice->items()->create([
-                    'product_variant_id'     => $this->resolveVariantId($item['variant_id']),
-                    'purchase_order_item_id' => $item['purchase_order_item_id'] ?: null,
-                    'name'                   => $item['name'],
-                    'quantity'               => $item['quantity'] !== '' ? $item['quantity'] : null,
-                    'unit_price'             => $item['unit_price'] !== '' ? $item['unit_price'] : null,
-                    'amount'                 => $item['amount'],
-                ]);
-            }
+        if ($usesItems && ! $this->purchaseOrderLinesBelongTo($supplier)) {
+            return;
         }
 
-        if ($invoice->type === SupplierInvoiceType::PURCHASE) {
-            $bill = $this->postBillToAccounts($invoice);
+        $purchaseOrderId = $usesItems ? $this->linkedPurchaseOrderId() : null;
 
-            if ($this->markPaidNow && $bill) {
+        // One transaction for the invoice, its lines and its Accounts
+        // postings, so a posting failure can't leave a half-recorded invoice
+        // that has already moved Supplier.balance.
+        $invoice = DB::transaction(function () use ($supplier, $amount, $usesItems, $purchaseOrderId) {
+            $serial = ($supplier->invoices()->max('serial_number') ?? 0) + 1;
+
+            $invoice = SupplierInvoice::create([
+                'supplier_id'       => $supplier->id,
+                'purchase_order_id' => $purchaseOrderId,
+                'serial_number'     => $serial,
+                'invoice_number'    => $this->invoiceNumber ?: null,
+                'type'              => $this->invoiceType,
+                'amount'            => $amount,
+                'is_adjusted'       => $this->invoiceIsAdjusted,
+                'invoice_date'      => $this->invoiceDate ?: null,
+                'notes'             => $this->invoiceNotes ?: null,
+                'document_ids'      => $this->documentIds ?: null,
+            ]);
+
+            if ($usesItems) {
+                $this->createInvoiceItems($invoice);
+            }
+
+            $bill = $this->postInvoiceToAccounts($invoice);
+
+            if ($invoice->type === SupplierInvoiceType::PURCHASE && $this->markPaidNow && $bill) {
                 $this->payBillNow($supplier, $bill);
             }
-        } elseif ($invoice->type === SupplierInvoiceType::ADVANCE) {
-            $this->postAdvanceToAccounts($invoice);
-        }
+
+            return $invoice;
+        });
 
         activity('purchase')
             ->causedBy(auth()->user())
@@ -430,6 +501,76 @@ trait HandlesSupplierInvoiceModal
 
         $this->invoiceModal = false;
         $this->dispatch('toast', ['type' => 'success', 'message' => 'Invoice recorded successfully']);
+    }
+
+    /** @return \Illuminate\Support\Collection<int, int> PO line ids the form's lines are linked to */
+    protected function linkedPurchaseOrderItemIds()
+    {
+        return collect($this->items)->pluck('purchase_order_item_id')->filter()->map(fn ($id) => (int) $id)->unique()->values();
+    }
+
+    /**
+     * Line links are client-settable too — refuse (with an error) any line
+     * pointing at a PO line that isn't on one of this supplier's POs.
+     */
+    protected function purchaseOrderLinesBelongTo(Supplier $supplier): bool
+    {
+        $ids = $this->linkedPurchaseOrderItemIds();
+
+        if ($ids->isEmpty()) {
+            return true;
+        }
+
+        $owned = PurchaseOrderItem::whereIn('id', $ids)
+            ->whereHas('purchaseOrder', fn ($q) => $q->where('supplier_id', $supplier->id))
+            ->count();
+
+        if ($owned !== $ids->count()) {
+            $this->addError('items', 'Some lines are linked to a purchase order of another supplier — remove them and add them again.');
+            return false;
+        }
+
+        return true;
+    }
+
+    /** Header-level PO link, taken from the lines so it can't drift from them. */
+    protected function linkedPurchaseOrderId(): ?int
+    {
+        $ids = $this->linkedPurchaseOrderItemIds();
+
+        $purchaseOrderId = $ids->isEmpty() ? null : PurchaseOrderItem::whereIn('id', $ids)->min('purchase_order_id');
+
+        return $purchaseOrderId ? (int) $purchaseOrderId : null;
+    }
+
+    protected function createInvoiceItems(SupplierInvoice $invoice): void
+    {
+        foreach ($this->items as $item) {
+            $invoice->items()->create([
+                'product_variant_id'     => $this->resolveVariantId($item['variant_id']),
+                'purchase_order_item_id' => $item['purchase_order_item_id'] ?: null,
+                'name'                   => $item['name'],
+                'quantity'               => $item['quantity'] !== '' ? $item['quantity'] : null,
+                'unit_price'             => $item['unit_price'] !== '' ? $item['unit_price'] : null,
+                'amount'                 => $item['amount'],
+            ]);
+        }
+    }
+
+    /**
+     * Posts whatever this invoice's type books in Accounts: a bill for a
+     * purchase, an advance, or a purchase return. Payments post through
+     * PostSupplierPayment instead (createPaymentInvoice()). Returns the bill
+     * for a purchase so "mark as paid now" can settle it.
+     */
+    protected function postInvoiceToAccounts(SupplierInvoice $invoice): ?AccountsSupplierBill
+    {
+        return match ($invoice->type) {
+            SupplierInvoiceType::PURCHASE => $this->postBillToAccounts($invoice),
+            SupplierInvoiceType::ADVANCE  => $this->postAdvanceToAccounts($invoice),
+            SupplierInvoiceType::RETURN   => $this->postReturnToAccounts($invoice),
+            SupplierInvoiceType::PAYMENT  => null,
+        };
     }
 
     /**
@@ -553,7 +694,11 @@ trait HandlesSupplierInvoiceModal
 
     protected function updateLatestInvoice(SupplierInvoice $invoice): void
     {
-        $usesItems = in_array($this->invoiceType, [SupplierInvoiceType::PURCHASE->value, SupplierInvoiceType::RETURN->value]);
+        $usesItems = $this->invoiceTypeUsesItems();
+        $amount = $usesItems ? $this->itemsTotal : (float) $this->manualAmount;
+
+        $originalType   = $invoice->type;
+        $originalAmount = (float) $invoice->amount;
 
         $rules = [
             'invoiceType'   => ['required', Rule::enum(SupplierInvoiceType::class)],
@@ -564,43 +709,58 @@ trait HandlesSupplierInvoiceModal
 
         $rules = $usesItems ? [...$rules, ...$this->itemRules()] : [...$rules, 'manualAmount' => 'required|numeric|min:0.01'];
 
+        // An advance whose type or amount changes is re-posted, which needs
+        // the cash/bank account it moved through.
+        $reposts = $originalType->value !== $this->invoiceType || abs($amount - $originalAmount) >= 0.01;
+        if ($this->invoiceType === SupplierInvoiceType::ADVANCE->value && $reposts) {
+            $rules['advanceCashAccountId'] = 'required|exists:accounts,id';
+        }
+
         $this->validate($rules);
 
-        $amount = $usesItems ? $this->itemsTotal : (float) $this->manualAmount;
+        // A payment is applied to specific bills when it's created — turning
+        // another invoice into one here would skip that, so it must be
+        // recorded as a new transaction instead.
+        if ($this->invoiceType === SupplierInvoiceType::PAYMENT->value) {
+            $this->addError('invoiceType', 'Record a payment as a new transaction instead of changing this one.');
+            return;
+        }
 
         if ($amount <= 0) {
             $this->addError('items', 'Total amount must be greater than zero.');
             return;
         }
 
-        $originalType   = $invoice->type;
-        $originalAmount = (float) $invoice->amount;
+        if ($usesItems && ! $this->purchaseOrderLinesBelongTo($invoice->supplier)) {
+            return;
+        }
 
-        $invoice->update([
-            'invoice_number' => $this->invoiceNumber ?: null,
-            'type'           => $this->invoiceType,
-            'amount'         => $amount,
-            'is_adjusted'    => $this->invoiceIsAdjusted,
-            'invoice_date'   => $this->invoiceDate ?: null,
-            'notes'          => $this->invoiceNotes ?: null,
-            'document_ids'   => $this->documentIds ?: null,
-        ]);
-
-        $this->reconcileBillOnEdit($invoice, $originalType, $originalAmount);
-
-        $invoice->items()->delete();
-
-        if ($usesItems) {
-            foreach ($this->items as $item) {
-                $invoice->items()->create([
-                    'product_variant_id'     => $this->resolveVariantId($item['variant_id']),
-                    'purchase_order_item_id' => $item['purchase_order_item_id'] ?: null,
-                    'name'                   => $item['name'],
-                    'quantity'               => $item['quantity'] !== '' ? $item['quantity'] : null,
-                    'unit_price'             => $item['unit_price'] !== '' ? $item['unit_price'] : null,
-                    'amount'                 => $item['amount'],
+        try {
+            DB::transaction(function () use ($invoice, $amount, $usesItems, $originalType, $originalAmount) {
+                $invoice->update([
+                    'invoice_number' => $this->invoiceNumber ?: null,
+                    'type'           => $this->invoiceType,
+                    'amount'         => $amount,
+                    'is_adjusted'    => $this->invoiceIsAdjusted,
+                    'invoice_date'   => $this->invoiceDate ?: null,
+                    'notes'          => $this->invoiceNotes ?: null,
+                    'document_ids'   => $this->documentIds ?: null,
                 ]);
-            }
+
+                $this->reconcileAccountsOnEdit($invoice, $originalType, $originalAmount);
+
+                $invoice->items()->delete();
+
+                if ($usesItems) {
+                    $this->createInvoiceItems($invoice);
+                }
+
+                $invoice->update(['purchase_order_id' => $usesItems ? $this->linkedPurchaseOrderId() : null]);
+            });
+        } catch (SupplierInvoiceLockedException $e) {
+            $this->addError('invoiceType', $e->getMessage());
+            $this->dispatch('toast', ['type' => 'error', 'message' => $e->getMessage()]);
+            return;
         }
 
         activity('purchase')
@@ -663,6 +823,29 @@ trait HandlesSupplierInvoiceModal
         }
     }
 
+    /**
+     * Books goods sent back to the supplier (Cr Inventory; Dr Payable against
+     * their open bills, any excess Dr Supplier Advance) — see
+     * PostSupplierReturn. Safely ignored if this invoice was already posted.
+     */
+    protected function postReturnToAccounts(SupplierInvoice $invoice): void
+    {
+        try {
+            app(PostSupplierReturn::class)->handle(
+                supplier: $invoice->supplier,
+                payableAccountId: $this->accountId('2100'),
+                supplierAdvanceAccountId: $this->accountId('1150'),
+                inventoryAccountId: $this->accountId('1200'),
+                amount: (float) $invoice->amount,
+                entryDate: $invoice->invoice_date?->toDateString() ?? now()->toDateString(),
+                supplierInvoiceId: $invoice->id,
+                description: "Purchase return #{$invoice->serial_number} — {$invoice->supplier->name}",
+            );
+        } catch (DuplicateJournalEntryException) {
+            // Already posted for this invoice — nothing to do.
+        }
+    }
+
     protected function accountId(string $code): int
     {
         return Account::where('code', $code)->value('id')
@@ -670,30 +853,39 @@ trait HandlesSupplierInvoiceModal
     }
 
     /**
-     * Keeps the Accounts side in step when an already-posted purchase
-     * invoice is edited. A posted journal entry is never mutated (Golden
-     * Rule #2), so: type newly becomes "purchase" -> post the first bill;
-     * amount changes on a bill that was already posted -> post a small
-     * adjustment entry for the delta and correct the AccountsSupplierBill
-     * total instead of re-posting the full amount. Switching a purchase
-     * invoice to a non-purchase type is left untouched here — no schema
-     * support for voiding a bill exists yet (status is open/partial/paid
-     * only), so that edit still needs to be corrected by hand in Accounts.
+     * Keeps the Accounts side in step when the latest invoice's type or
+     * amount is edited. A posted journal entry is never mutated (Golden
+     * Rule #2): a purchase that stays a purchase gets a delta adjustment
+     * (reconcileBillOnEdit(), so a part-paid bill keeps its payments);
+     * any other change reverses what the invoice posted and posts it again
+     * as its new type. Throws SupplierInvoiceLockedException (rolling the
+     * edit back) when Accounts has already settled the original posting.
      */
-    protected function reconcileBillOnEdit(SupplierInvoice $invoice, SupplierInvoiceType $originalType, float $originalAmount): void
+    protected function reconcileAccountsOnEdit(SupplierInvoice $invoice, SupplierInvoiceType $originalType, float $originalAmount): void
     {
-        $wasPurchase = $originalType === SupplierInvoiceType::PURCHASE;
-        $isPurchase  = $invoice->type === SupplierInvoiceType::PURCHASE;
+        $typeChanged   = $originalType !== $invoice->type;
+        $amountChanged = abs((float) $invoice->amount - $originalAmount) >= 0.01;
 
-        if (! $wasPurchase && $isPurchase) {
-            $this->postBillToAccounts($invoice);
+        if (! $typeChanged && ! $amountChanged) {
             return;
         }
 
-        if (! $wasPurchase || ! $isPurchase) {
+        if (! $typeChanged && $invoice->type === SupplierInvoiceType::PURCHASE) {
+            $this->reconcileBillOnEdit($invoice, $originalAmount);
             return;
         }
 
+        app(UnpostSupplierInvoice::class)->handle($invoice, "Supplier invoice #{$invoice->serial_number} edited");
+        $this->postInvoiceToAccounts($invoice);
+    }
+
+    /**
+     * Purchase stays purchase, amount changed: post a small adjustment entry
+     * for the delta and correct the AccountsSupplierBill total instead of
+     * re-posting the full amount.
+     */
+    protected function reconcileBillOnEdit(SupplierInvoice $invoice, float $originalAmount): void
+    {
         $bill = AccountsSupplierBill::where('supplier_invoice_id', $invoice->id)->first();
 
         if (! $bill) {
@@ -705,6 +897,11 @@ trait HandlesSupplierInvoiceModal
 
         if (abs($delta) < 0.01) {
             return;
+        }
+
+        // The bill can't end up owing less than has already been paid on it.
+        if ((float) $invoice->amount + 0.009 < (float) $bill->amount_allocated) {
+            throw SupplierInvoiceLockedException::belowPaid((float) $bill->amount_allocated);
         }
 
         $this->postBillAdjustment($invoice, $bill, $delta);
@@ -731,6 +928,10 @@ trait HandlesSupplierInvoiceModal
                 'entry_date'       => $invoice->invoice_date?->toDateString() ?? now()->toDateString(),
                 'description'      => "Purchase invoice #{$invoice->serial_number} adjustment — {$invoice->supplier->name}",
                 'transaction_type' => TransactionType::SUPPLIER_BILL->value,
+                // Sourced (without a purpose, so repeat adjustments are fine)
+                // so UnpostSupplierInvoice reverses it along with the bill.
+                'source_type'      => SupplierInvoice::class,
+                'source_id'        => $invoice->id,
             ], $lines);
 
             $bill->amount = round((float) $bill->amount + $delta, 2);
@@ -743,14 +944,25 @@ trait HandlesSupplierInvoiceModal
 
     public function deleteInvoice(int $id): void
     {
-        $invoice = SupplierInvoice::findOrFail($id);
+        $invoice = SupplierInvoice::with('supplier')->findOrFail($id);
 
+        // Undo the Accounts side first, in the same transaction, so a delete
+        // the model then refuses (not the latest, a payment) changes nothing.
         try {
-            $invoice->delete();
-        } catch (SupplierInvoiceDeletionException $e) {
+            DB::transaction(function () use ($invoice) {
+                app(UnpostSupplierInvoice::class)->handle($invoice, "Supplier invoice #{$invoice->serial_number} deleted");
+                $invoice->delete();
+            });
+        } catch (SupplierInvoiceDeletionException|SupplierInvoiceLockedException $e) {
             $this->dispatch('toast', ['type' => 'error', 'message' => $e->getMessage()]);
             return;
         }
+
+        activity('purchase')
+            ->causedBy(auth()->user())
+            ->withProperties(['type' => $invoice->type->value, 'amount' => $invoice->amount])
+            ->event('deleted')
+            ->log("Supplier invoice #{$invoice->serial_number} ({$invoice->type->label()}) deleted for \"{$invoice->supplier->name}\"");
 
         $this->dispatch('toast', ['type' => 'success', 'message' => 'Invoice deleted']);
     }
@@ -767,12 +979,13 @@ trait HandlesSupplierInvoiceModal
     {
         $purchaseOrders = collect();
         if ($this->invoiceModal && $supplierId) {
-            $purchaseOrders = PurchaseOrder::with('items')
+            $purchaseOrders = PurchaseOrder::with(['items' => fn ($q) => $q->withSum('purchaseInvoiceItems as invoiced_amount', 'amount')])
                 ->where('supplier_id', $supplierId)
+                ->where('status', '!=', 'cancelled')
                 ->orderByDesc('id')
                 ->get()
                 ->map(function (PurchaseOrder $order) {
-                    $order->invoiced_total = $order->items->sum(fn (PurchaseOrderItem $item) => $item->invoicedAmount());
+                    $order->invoiced_total = (float) $order->items->sum('invoiced_amount');
                     return $order;
                 });
         }

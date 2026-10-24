@@ -50,6 +50,12 @@ class Supplier extends Model
         return $this->hasMany(PurchaseOrder::class);
     }
 
+    /** POs still waiting on stock (pending), for the "open POs" counts. */
+    public function openPurchaseOrders(): HasMany
+    {
+        return $this->purchaseOrders()->where('status', 'pending');
+    }
+
     public function scopeActive(Builder $query): Builder
     {
         return $query->where('status', 'active');

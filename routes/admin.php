@@ -3,6 +3,8 @@
 use App\Http\Controllers\Admin\CompanyPrintController;
 use App\Http\Controllers\Admin\FileUploadController;
 use App\Http\Controllers\Admin\OrderPrintController;
+use App\Http\Controllers\Admin\PurchaseOrderPrintController;
+use App\Http\Controllers\Admin\SupplierInvoicePrintController;
 use App\Livewire\Admin\Frontend\Appearance as FrontendAppearance;
 use App\Livewire\Admin\Frontend\Components as FrontendComponents;
 use App\Livewire\Admin\Frontend\Icons as FrontendIcons;
@@ -97,6 +99,9 @@ Route::prefix('purchase')->name('purchase.')->middleware('module:purchase')->gro
     Route::get('/orders', App\Livewire\Admin\Purchase\PurchaseOrders::class)->name('orders');
     Route::get('/orders/create', App\Livewire\Admin\Purchase\PurchaseOrderForm::class)->name('orders.create');
     Route::get('/orders/{id}/edit', App\Livewire\Admin\Purchase\PurchaseOrderForm::class)->name('orders.edit');
+    Route::get('/orders/{id}/print/{type?}', PurchaseOrderPrintController::class)
+        ->whereNumber('id')->whereIn('type', ['order', 'checklist'])->name('orders.print');
+    Route::get('/invoices/{id}/print', SupplierInvoicePrintController::class)->whereNumber('id')->name('invoices.print');
 });
 
 // Accounts

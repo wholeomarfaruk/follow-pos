@@ -52,6 +52,7 @@
                     <tr class="border-b border-gray-100 bg-gray-50/40">
                         <th class="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Supplier</th>
                         <th class="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Contact</th>
+                        <th class="px-5 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">Open POs</th>
                         <th class="px-5 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Balance</th>
                         <th class="px-5 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
                         <th class="px-5 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Actions</th>
@@ -72,6 +73,14 @@
                             <td class="px-5 py-3">
                                 <span class="block text-sm text-gray-600">{{ $supplier->phone ?? '—' }}</span>
                                 <span class="block text-xs text-gray-400">{{ $supplier->email ?? '' }}</span>
+                            </td>
+                            <td class="px-5 py-3 text-center">
+                                @if($supplier->open_purchase_orders_count)
+                                    <a href="{{ route('admin.purchase.suppliers.ledger', $supplier->id) }}?tab=orders" wire:navigate
+                                        class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-600 hover:bg-amber-100">{{ $supplier->open_purchase_orders_count }}</a>
+                                @else
+                                    <span class="text-sm text-gray-300">—</span>
+                                @endif
                             </td>
                             <td class="px-5 py-3 text-right">
                                 <span class="text-sm font-medium {{ $supplier->balance > 0 ? 'text-red-500' : 'text-gray-500' }}">
@@ -121,7 +130,7 @@
                         </tr>
                     @empty
                         <tr>
-                            <td colspan="5" class="px-5 py-16 text-center">
+                            <td colspan="6" class="px-5 py-16 text-center">
                                 <div class="flex flex-col items-center gap-3">
                                     <div class="w-14 h-14 rounded-full bg-gray-100 flex items-center justify-center">
                                         <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">

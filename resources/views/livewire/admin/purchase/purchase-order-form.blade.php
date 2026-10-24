@@ -18,6 +18,27 @@
                 @endif
             </div>
         </div>
+        <div class="flex flex-wrap items-center gap-2">
+        @if($order)
+            <a href="{{ route('admin.purchase.orders.print', [$order->id, 'order']) }}" target="_blank"
+                class="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-200 rounded-xl hover:bg-gray-50 transition">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M6.72 13.829c-.24.03-.48.062-.72.096m.72-.096a42.415 42.415 0 0 1 10.56 0m-10.56 0L6.34 18m10.94-4.171c.24.03.48.062.72.096m-.72-.096L17.66 18m0 0 .229 2.523a1.125 1.125 0 0 1-1.12 1.227H7.231c-.662 0-1.18-.568-1.12-1.227L6.34 18m11.318 0h1.091A2.25 2.25 0 0 0 21 15.75V9.456c0-1.081-.768-2.015-1.837-2.175a48.055 48.055 0 0 0-1.913-.247M6.34 18H5.25A2.25 2.25 0 0 1 3 15.75V9.456c0-1.081.768-2.015 1.837-2.175a48.041 48.041 0 0 1 1.913-.247m10.5 0a48.536 48.536 0 0 0-10.5 0m10.5 0V3.375c0-.621-.504-1.125-1.125-1.125h-8.25c-.621 0-1.125.504-1.125 1.125v3.659M18 10.5h.008v.008H18V10.5Zm-3 0h.008v.008H15V10.5Z"/>
+                </svg>
+                Print PO
+            </a>
+            <a href="{{ route('admin.purchase.orders.print', [$order->id, 'checklist']) }}" target="_blank"
+                class="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-200 rounded-xl hover:bg-gray-50 transition">
+                Receiving Checklist
+            </a>
+            @if(! $order->isCancelled() && $receivingItems->contains(fn ($i) => $i->invoiced_quantity + 0.0005 < (float) $i->quantity))
+                <a href="{{ route('admin.purchase.suppliers.ledger', $order->supplier_id) }}?purchase_order={{ $order->id }}" wire:navigate
+                    class="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-indigo-600 bg-indigo-50 rounded-xl hover:bg-indigo-100 transition">
+                    Create Invoice
+                </a>
+            @endif
+        @endif
+        @unless($order?->isCancelled())
         <button wire:click="save" type="button" wire:loading.attr="disabled" wire:target="save"
             class="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition shadow-sm disabled:opacity-60 disabled:cursor-not-allowed">
             <svg wire:loading.remove wire:target="save" xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
@@ -30,7 +51,18 @@
             <span wire:loading.remove wire:target="save">{{ $editingId ? 'Save Changes' : 'Create Purchase Order' }}</span>
             <span wire:loading wire:target="save">Saving…</span>
         </button>
+        @endunless
+        </div>
     </div>
+
+    @if($order?->isCancelled())
+        <div class="mb-6 flex items-start gap-2.5 rounded-xl bg-red-50 border border-red-100 px-4 py-3">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-red-500 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z"/>
+            </svg>
+            <p class="text-sm text-red-700">This purchase order is cancelled — it's read-only, and can't be received or billed.</p>
+        </div>
+    @endif
 
     <div class="grid grid-cols-12 gap-6">
 
@@ -178,6 +210,69 @@
                         {{ $order->status }}
                     </span>
                     <p class="text-xs text-gray-400 mt-2">Updates automatically once every item below is fully received.</p>
+                    <div class="mt-4 space-y-2.5">
+                        <div>
+                            <div class="flex items-center justify-between text-xs mb-1">
+                                <span class="text-gray-500">Received</span>
+                                <span class="text-gray-700 font-medium"><x-qty :value="$order->received_quantity" /> / <x-qty :value="$order->ordered_quantity" /></span>
+                            </div>
+                            @include('livewire.admin.purchase.partials.received-progress', ['order' => $order])
+                        </div>
+                        <div class="flex items-center justify-between text-xs pt-2 border-t border-gray-100">
+                            <span class="text-gray-500">Billed</span>
+                            <span class="text-gray-700 font-medium">{{ number_format($order->invoiced_amount, 2) }} / {{ number_format($order->ordered_amount, 2) }}</span>
+                        </div>
+                        @if($order->ordered_amount - $order->invoiced_amount > 0.01)
+                            <div class="flex items-center justify-between text-xs">
+                                <span class="text-gray-500">Left to bill</span>
+                                <span class="text-amber-600 font-medium">{{ number_format($order->ordered_amount - $order->invoiced_amount, 2) }}</span>
+                            </div>
+                        @endif
+                    </div>
+                </div>
+
+                {{-- Linked documents --}}
+                <div class="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+                    <div class="px-5 py-4 border-b border-gray-100">
+                        <h2 class="text-sm font-semibold text-gray-800">Documents</h2>
+                        <p class="text-xs text-gray-400 mt-0.5">Invoices billed and goods receivings against this order.</p>
+                    </div>
+                    <div class="divide-y divide-gray-100">
+                        @forelse($order->invoices as $invoice)
+                            <div class="px-5 py-2.5 flex items-center justify-between gap-3" wire:key="po-invoice-{{ $invoice->id }}">
+                                <div class="min-w-0">
+                                    <div class="flex items-center gap-1.5">
+                                        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium {{ $invoice->type->badgeClass() }}">{{ $invoice->type->label() }}</span>
+                                        <span class="text-xs font-mono text-gray-700 truncate">{{ $invoice->reference() }}</span>
+                                    </div>
+                                    <span class="block text-[11px] text-gray-400">{{ $invoice->invoice_date?->format('d M, Y') ?? '—' }}</span>
+                                </div>
+                                <div class="flex items-center gap-2 shrink-0">
+                                    <span class="text-sm font-medium tabular-nums text-gray-800">{{ number_format($invoice->amount, 2) }}</span>
+                                    <a href="{{ route('admin.purchase.invoices.print', $invoice->id) }}" target="_blank" title="Print" class="text-gray-400 hover:text-indigo-600">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"/>
+                                        </svg>
+                                    </a>
+                                </div>
+                            </div>
+                        @empty
+                            <p class="px-5 py-3 text-xs text-gray-400">No invoices yet.</p>
+                        @endforelse
+                        @foreach($order->receivings as $grn)
+                            <a href="{{ route('admin.inventory.receivings.show', $grn->id) }}" wire:navigate wire:key="po-grn-{{ $grn->id }}"
+                                class="px-5 py-2.5 flex items-center justify-between gap-3 hover:bg-gray-50 transition">
+                                <div class="min-w-0">
+                                    <div class="flex items-center gap-1.5">
+                                        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium {{ $grn->status === 'cancelled' ? 'bg-red-50 text-red-500' : 'bg-teal-50 text-teal-600' }}">{{ $grn->status === 'cancelled' ? 'GRN cancelled' : 'GRN' }}</span>
+                                        <span class="text-xs font-mono text-gray-700 truncate">{{ $grn->grn_number }}</span>
+                                    </div>
+                                    <span class="block text-[11px] text-gray-400">{{ $grn->received_at?->format('d M, Y') }}</span>
+                                </div>
+                                <span class="text-sm tabular-nums text-gray-600 shrink-0"><x-qty :value="$grn->total_quantity" /> pcs</span>
+                            </a>
+                        @endforeach
+                    </div>
                 </div>
             @endif
 
@@ -256,7 +351,7 @@
                     <h2 class="text-sm font-semibold text-gray-800">Receiving</h2>
                     <p class="text-xs text-gray-400 mt-0.5">A purchase order can arrive in several partial shipments — receive the whole delivery at once, or one item with Receive.</p>
                 </div>
-                @if($receivingItems->contains(fn ($i) => $i->remaining > 0))
+                @if(! $order->isCancelled() && $receivingItems->contains(fn ($i) => $i->remaining > 0))
                     <a href="{{ route('admin.inventory.stock-in') }}?purchase_order={{ $order->id }}" wire:navigate
                         class="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 transition shrink-0">
                         Receive all remaining
@@ -285,7 +380,15 @@
                                 <x-qty :value="$item->received_so_far" /> / <x-qty :value="$item->quantity" />
                             </p>
                         </div>
-                        @if($item->remaining > 0)
+                        <div class="text-right shrink-0">
+                            <p class="text-xs text-gray-400">Billed</p>
+                            <p class="text-sm font-semibold {{ $item->invoiced_quantity + 0.0005 >= (float) $item->quantity ? 'text-emerald-600' : 'text-gray-700' }}">
+                                <x-qty :value="$item->invoiced_quantity" />
+                            </p>
+                        </div>
+                        @if($order->isCancelled())
+                            <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-500 shrink-0">Cancelled</span>
+                        @elseif($item->remaining > 0)
                             <a href="{{ route('admin.inventory.stock-in') }}?purchase_order={{ $order->id }}&item={{ $item->id }}" wire:navigate
                                 class="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition shrink-0">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">

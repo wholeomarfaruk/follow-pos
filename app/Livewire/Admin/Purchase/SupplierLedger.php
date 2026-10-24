@@ -6,8 +6,11 @@ use App\Enums\Purchase\SupplierInvoiceType;
 use App\Livewire\Traits\HandlesSupplierInvoiceModal;
 use App\Livewire\Traits\WithMediaPicker;
 use App\Models\File;
+use App\Models\PurchaseOrder;
 use App\Models\Supplier;
 use App\Models\SupplierInvoice;
+use App\Services\Purchase\PurchaseOrderProgress;
+use Livewire\Attributes\Url;
 use Livewire\Component;
 use Livewire\WithPagination;
 
@@ -19,12 +22,28 @@ class SupplierLedger extends Component
 
     public int $supplierId;
 
+    /** "transactions" (the invoice ledger) or "orders" (this supplier's POs). */
+    #[Url(except: 'transactions')]
+    public string $tab = 'transactions';
+
     protected string $paginationTheme = 'tailwind';
 
     public function mount(int $supplierId): void
     {
         $this->supplierId  = $supplierId;
         $this->invoiceDate = now()->format('Y-m-d');
+
+        // Deep link from a PO page's "Create invoice": ?purchase_order=X
+        // opens the modal pre-filled with that PO's unbilled lines.
+        $purchaseOrderId = (int) request()->query('purchase_order');
+        if ($purchaseOrderId && PurchaseOrder::whereKey($purchaseOrderId)->where('supplier_id', $supplierId)->exists()) {
+            $this->openInvoiceModalForPurchaseOrder($purchaseOrderId);
+        }
+    }
+
+    public function setTab(string $tab): void
+    {
+        $this->tab = in_array($tab, ['transactions', 'orders'], true) ? $tab : 'transactions';
     }
 
     protected function invoiceSupplierId(): ?int
@@ -95,6 +114,7 @@ class SupplierLedger extends Component
         $supplier = Supplier::findOrFail($this->supplierId);
 
         $invoices = $supplier->invoices()
+            ->with('purchaseOrder:id,order_number')
             ->withCount('items')
             ->orderByDesc('serial_number')
             ->paginate(15);
@@ -102,11 +122,21 @@ class SupplierLedger extends Component
         $this->attachRunningBalances($supplier, $invoices->getCollection());
         $this->attachDocuments($invoices->getCollection());
 
+        // Named apart from the modal's own `purchaseOrders` (the PO picker).
+        $supplierOrders = null;
+        if ($this->tab === 'orders') {
+            $supplierOrders = $supplier->purchaseOrders()->with('items')->orderByDesc('id')->paginate(15, ['*'], 'poPage');
+            app(PurchaseOrderProgress::class)->attach($supplierOrders->getCollection());
+        }
+
         return view('livewire.admin.purchase.supplier-ledger', [
             'supplier'      => $supplier,
             'invoices'      => $invoices,
+            'supplierOrders' => $supplierOrders,
+            'openOrderCount' => $supplier->openPurchaseOrders()->count(),
             'purchaseTotal' => $supplier->invoices()->where('type', SupplierInvoiceType::PURCHASE)->sum('amount'),
             'paidTotal'     => $supplier->invoices()->whereIn('type', [SupplierInvoiceType::ADVANCE, SupplierInvoiceType::PAYMENT])->sum('amount'),
+            'returnTotal'   => $supplier->invoices()->where('type', SupplierInvoiceType::RETURN)->sum('amount'),
             ...$this->invoiceModalViewData($this->supplierId),
         ])->layout('layouts.admin.admin');
     }

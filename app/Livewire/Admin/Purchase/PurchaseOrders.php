@@ -4,6 +4,7 @@ namespace App\Livewire\Admin\Purchase;
 
 use App\Models\PurchaseOrder;
 use App\Models\Supplier;
+use App\Services\Purchase\PurchaseOrderProgress;
 use Livewire\Component;
 use Livewire\WithPagination;
 
@@ -24,6 +25,12 @@ class PurchaseOrders extends Component
     public function cancelOrder(int $id): void
     {
         $order = PurchaseOrder::findOrFail($id);
+
+        if ($order->status !== 'pending') {
+            $this->dispatch('toast', ['type' => 'error', 'message' => "Only a pending order can be cancelled — {$order->order_number} is {$order->status}."]);
+            return;
+        }
+
         $order->update(['status' => 'cancelled']);
 
         activity('purchase')
@@ -37,8 +44,22 @@ class PurchaseOrders extends Component
 
     public function deleteOrder(int $id): void
     {
-        $order = PurchaseOrder::findOrFail($id);
+        $order = PurchaseOrder::with('items')->withCount(['invoices', 'receivings'])->findOrFail($id);
         $number = $order->order_number;
+
+        // Its GRNs, batches and invoices point at this order — keep it (and
+        // cancel instead) once anything was received or billed against it.
+        // received_quantity also covers receipts made before GRNs existed
+        // (stock movements against the PO line, with no receiving row).
+        app(PurchaseOrderProgress::class)->attach(collect([$order]));
+
+        if ($order->invoices_count > 0 || $order->receivings_count > 0
+            || $order->received_quantity > 0
+            || $order->items()->whereHas('invoiceItems')->exists()
+            || $order->items()->whereHas('receivingItems')->exists()) {
+            $this->dispatch('toast', ['type' => 'error', 'message' => "{$number} already has receivings or invoices — cancel it instead of deleting."]);
+            return;
+        }
 
         $order->delete();
 
@@ -64,6 +85,8 @@ class PurchaseOrders extends Component
             ->when($this->filterSupplier !== '', fn($q) => $q->where('supplier_id', $this->filterSupplier))
             ->orderByDesc('id')
             ->paginate(15);
+
+        app(PurchaseOrderProgress::class)->attach($orders->getCollection());
 
         return view('livewire.admin.purchase.purchase-orders', [
             'orders'          => $orders,

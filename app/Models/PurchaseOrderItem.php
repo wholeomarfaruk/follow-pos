@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\Purchase\SupplierInvoiceType;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -51,6 +52,23 @@ class PurchaseOrderItem extends Model
      */
     public function invoicedAmount(): float
     {
-        return (float) $this->invoiceItems()->sum('amount');
+        return (float) $this->purchaseInvoiceItems()->sum('amount');
+    }
+
+    /** Quantity already billed on purchase invoices — what's left is quantity - this. */
+    public function invoicedQuantity(): float
+    {
+        return (float) $this->purchaseInvoiceItems()->sum('quantity');
+    }
+
+    /** Invoice lines of "purchase" invoices only, so a return doesn't count as billed. */
+    public function purchaseInvoiceItems(): HasMany
+    {
+        return $this->invoiceItems()->whereHas('invoice', fn ($q) => $q->where('type', SupplierInvoiceType::PURCHASE->value));
+    }
+
+    public function receivingItems(): HasMany
+    {
+        return $this->hasMany(StockReceivingItem::class);
     }
 }

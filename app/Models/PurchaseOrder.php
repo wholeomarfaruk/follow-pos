@@ -12,7 +12,7 @@ class PurchaseOrder extends Model
     use SoftDeletes;
 
     protected $fillable = [
-        'order_number', 'supplier_id', 'supplier_invoice_id', 'status',
+        'order_number', 'supplier_id', 'status',
         'order_date', 'deadline', 'notes',
     ];
 
@@ -34,9 +34,21 @@ class PurchaseOrder extends Model
         return $this->hasMany(PurchaseOrderItem::class);
     }
 
-    public function supplierInvoice(): BelongsTo
+    /** Supplier invoices billed against this PO (purchase bills and any returns). */
+    public function invoices(): HasMany
     {
-        return $this->belongsTo(SupplierInvoice::class);
+        return $this->hasMany(SupplierInvoice::class);
+    }
+
+    /** Goods receivings (GRNs) made against this PO. */
+    public function receivings(): HasMany
+    {
+        return $this->hasMany(StockReceiving::class);
+    }
+
+    public function isCancelled(): bool
+    {
+        return $this->status === 'cancelled';
     }
 
     /** Sum of all line items' total_amount — computed, not stored on the header. */

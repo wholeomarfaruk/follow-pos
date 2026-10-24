@@ -161,6 +161,9 @@ class StockReceivingService
         if (! $lines) {
             $errors['lines'] = 'Add at least one product.';
         }
+        if ($po?->isCancelled()) {
+            $errors['purchaseOrderId'] = "{$po->order_number} is cancelled — nothing more can be received against it.";
+        }
 
         $seen = [];
         $poQty = [];

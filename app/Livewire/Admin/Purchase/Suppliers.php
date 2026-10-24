@@ -210,6 +210,7 @@ class Suppliers extends Component
     public function render(): mixed
     {
         $suppliers = Supplier::query()
+            ->withCount('openPurchaseOrders')
             ->when($this->search, fn($q) => $q->where(fn($s) => $s
                 ->where('name', 'like', "%{$this->search}%")
                 ->orWhere('code', 'like', "%{$this->search}%")
