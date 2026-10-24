@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\PaymentMethod;
 use App\Enums\Purchase\SupplierInvoiceType;
 use App\Exceptions\Purchase\SupplierInvoiceDeletionException;
 use Illuminate\Database\Eloquent\Model;
@@ -14,7 +15,7 @@ class SupplierInvoice extends Model
 {
     protected $fillable = [
         'supplier_id', 'purchase_order_id', 'serial_number', 'invoice_number', 'type',
-        'amount', 'is_adjusted', 'invoice_date', 'notes', 'document_ids',
+        'amount', 'payment_method', 'payment_reference', 'is_adjusted', 'invoice_date', 'notes', 'document_ids',
     ];
 
     protected function casts(): array
@@ -22,6 +23,7 @@ class SupplierInvoice extends Model
         return [
             'type'         => SupplierInvoiceType::class,
             'amount'       => 'decimal:2',
+            'payment_method' => PaymentMethod::class,
             'is_adjusted'  => 'boolean',
             'invoice_date' => 'date',
             'document_ids' => 'array',

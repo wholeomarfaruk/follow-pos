@@ -3,6 +3,7 @@
 namespace App\Livewire\Accounts;
 
 use App\Enums\Accounts\JournalEntryStatus;
+use App\Enums\PaymentMethod;
 use App\Models\Account;
 use App\Models\JournalEntry;
 use App\Models\MasterProfile;
@@ -13,6 +14,7 @@ use App\Support\AccountsAccess;
 use App\Support\AccountsSettings;
 use App\Support\Bdt;
 use App\Support\BdPhone;
+use Illuminate\Validation\Rule;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\On;
 use Livewire\Component;
@@ -67,6 +69,8 @@ class VoucherForm extends Component
             'amount'      => null,
             'charge'      => null,
             'note'        => '',
+            'method'      => PaymentMethod::forAccount($this->cashAccounts[0] ?? null)->value,
+            'reference'   => '',
         ];
         $this->lines = [$this->blankLine(), $this->blankLine()];
 
@@ -107,6 +111,7 @@ class VoucherForm extends Component
         $this->f['note'] = (string) $e->description;
         $this->f['profile_id'] = $e->master_profile_id;
         $this->f['party_label'] = (string) $e->party_label;
+        $this->f['reference'] = (string) $e->payment_reference;
 
         $cash = $e->lines->filter(fn ($l) => in_array($l->account?->subtype, LedgerAccounts::CASH_SUBTYPES, true));
         $other = $e->lines->diff($cash);
@@ -115,6 +120,8 @@ class VoucherForm extends Component
         if ($simple) {
             $this->type = $e->voucher_type;
             $this->f['account_id'] = $cash->first()->account_id;
+            $this->f['method'] = $e->payment_method?->value
+                ?? PaymentMethod::forAccount(collect($this->cashAccounts)->firstWhere('id', $cash->first()->account_id))->value;
             $this->f['ledger_id'] = $other->first()->account_id;
             $this->f['amount'] = (float) $e->amount;
         } elseif ($e->voucher_type === 'contra' && $cash->count() >= 2) {
@@ -137,6 +144,20 @@ class VoucherForm extends Component
     public function close(): void
     {
         $this->open = false;
+    }
+
+    /** Choosing a method pre-picks the matching "Received in / Paid from" account. */
+    public function updatedF($value, $key): void
+    {
+        if ($key === 'method' && ($accountId = PaymentMethod::tryFrom((string) $value)?->pickAccount($this->cashAccounts))) {
+            $this->f['account_id'] = $accountId;
+        }
+    }
+
+    /** Receipts, payments and expenses move money one way, so they carry how it moved. */
+    protected function takesPaymentMethod(): bool
+    {
+        return in_array($this->type, ['receipt', 'payment', 'expense'], true);
     }
 
     public function addLine(): void
@@ -300,7 +321,10 @@ class VoucherForm extends Component
                 'f.ledger_id'   => 'required|integer|exists:accounts,id',
                 'f.amount'      => 'required|numeric|min:1',
                 'f.party_label' => 'nullable|string|max:120',
-            ],
+            ] + ($this->takesPaymentMethod() ? [
+                'f.method'    => ['required', Rule::in(PaymentMethod::values(PaymentMethod::manual()))],
+                'f.reference' => 'nullable|string|max:100',
+            ] : []),
         };
     }
 
@@ -318,6 +342,8 @@ class VoucherForm extends Component
             'profile_id'       => $profile?->id,
             'party_label'      => $profile ? null : ($f['party_label'] ?: null),
             'money_account_id' => in_array($this->type, ['receipt', 'payment', 'expense', 'contra'], true) ? (int) $f['account_id'] : null,
+            'payment_method'    => $this->takesPaymentMethod() ? ($f['method'] ?? null) : null,
+            'payment_reference' => $this->takesPaymentMethod() ? (($f['reference'] ?? '') ?: null) : null,
         ];
 
         $lines = match ($this->type) {

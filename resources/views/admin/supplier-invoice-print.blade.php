@@ -79,6 +79,12 @@
             <div>
                 <dl class="text-sm space-y-1">
                     <div class="flex justify-between gap-4"><dt class="text-gray-500">Type</dt><dd class="text-gray-900">{{ $invoice->type->label() }}</dd></div>
+                    @if($invoice->payment_method)
+                        <div class="flex justify-between gap-4"><dt class="text-gray-500">Payment Method</dt><dd class="text-gray-900">{{ $invoice->payment_method->label() }}</dd></div>
+                        @if($invoice->payment_reference)
+                            <div class="flex justify-between gap-4"><dt class="text-gray-500">{{ $invoice->payment_method->referenceLabel() ?? 'Reference' }}</dt><dd class="font-mono text-gray-900">{{ $invoice->payment_reference }}</dd></div>
+                        @endif
+                    @endif
                     @if($invoice->purchaseOrder)
                         <div class="flex justify-between gap-4"><dt class="text-gray-500">Purchase Order</dt><dd class="font-mono text-gray-900">{{ $invoice->purchaseOrder->order_number }}</dd></div>
                     @endif

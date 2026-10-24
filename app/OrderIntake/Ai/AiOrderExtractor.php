@@ -2,6 +2,7 @@
 
 namespace App\OrderIntake\Ai;
 
+use App\Enums\PaymentMethod;
 use App\OrderIntake\IntakeSettings;
 use App\OrderIntake\Text;
 use Illuminate\Support\Facades\Log;
@@ -241,7 +242,7 @@ PROMPT;
                                 'required'             => ['kind', 'value'],
                                 'properties'           => ['kind' => ['type' => 'string', 'enum' => ['none', 'total', 'cod']], 'value' => $num],
                             ],
-                            'payment_method'  => ['type' => ['string', 'null'], 'enum' => ['cod', 'bkash', 'nagad', 'rocket', 'bank', 'cash', null]],
+                            'payment_method'  => ['type' => ['string', 'null'], 'enum' => [...PaymentMethod::values([PaymentMethod::COD, PaymentMethod::BKASH, PaymentMethod::NAGAD, PaymentMethod::ROCKET, PaymentMethod::BANK, PaymentMethod::CASH]), null]],
                             'note'            => $str,
                             'confidence'      => ['type' => 'number'],
                             'unresolved'      => ['type' => 'array', 'items' => ['type' => 'string']],

@@ -4,9 +4,11 @@ namespace App\Livewire\Admin\Accounts;
 
 use App\Actions\Accounts\PostCustomerPayment;
 use App\Actions\Accounts\WriteOffBadDebt;
+use App\Enums\PaymentMethod;
 use App\Models\Account;
 use App\Models\AccountsCustomerInvoice;
 use App\Models\Customer;
+use Illuminate\Validation\Rule;
 use Livewire\Component;
 use Livewire\WithPagination;
 
@@ -27,6 +29,8 @@ class Receivables extends Component
     public ?int $payCustomerId = null;
     public string $payAmount = '';
     public ?int $payCashAccountId = null;
+    public string $payMethod = 'cash';
+    public string $payReference = '';
     public string $payDate = '';
     /** @var array<int, bool> */
     public array $selectedInvoices = [];
@@ -39,7 +43,22 @@ class Receivables extends Component
         $this->payAmount = '';
         $this->payDate = now()->toDateString();
         $this->selectedInvoices = [];
+        $this->payMethod = PaymentMethod::CASH->value;
+        $this->payReference = '';
+        $this->updatedPayMethod();
         $this->resetValidation();
+    }
+
+    /** Pre-picks the "Received into" account matching the chosen method. */
+    public function updatedPayMethod(): void
+    {
+        $accountId = PaymentMethod::tryFrom($this->payMethod)?->pickAccount(
+            Account::active()->whereIn('subtype', ['cash', 'bank', 'mobile_banking'])->orderBy('code')->get()
+        );
+
+        if ($accountId) {
+            $this->payCashAccountId = $accountId;
+        }
     }
 
     public function receivePayment(): void
@@ -47,6 +66,8 @@ class Receivables extends Component
         $this->validate([
             'payAmount'        => 'required|numeric|gt:0',
             'payCashAccountId' => 'required|exists:accounts,id',
+            'payMethod'        => ['required', Rule::in(PaymentMethod::values(PaymentMethod::manual()))],
+            'payReference'     => 'nullable|string|max:100',
             'payDate'          => 'required|date',
         ]);
 
@@ -68,6 +89,8 @@ class Receivables extends Component
             (float) $this->payAmount,
             $this->payDate,
             $allocations,
+            paymentMethod: PaymentMethod::from($this->payMethod),
+            paymentReference: $this->payReference ?: null,
         );
 
         $this->payCustomerId = null;

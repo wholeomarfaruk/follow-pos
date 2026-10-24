@@ -3,6 +3,7 @@
 namespace App\Actions\Accounts;
 
 use App\Enums\Accounts\TransactionType;
+use App\Enums\PaymentMethod;
 use App\Models\AccountsSupplierAdvance;
 use App\Models\Supplier;
 use App\Models\SupplierInvoice;
@@ -27,15 +28,19 @@ class PostSupplierAdvance
         string $entryDate,
         ?int $supplierInvoiceId = null,
         ?string $description = null,
+        ?PaymentMethod $paymentMethod = null,
+        ?string $paymentReference = null,
     ): AccountsSupplierAdvance {
-        return DB::transaction(function () use ($supplier, $supplierAdvanceAccountId, $cashAccountId, $amount, $entryDate, $supplierInvoiceId, $description) {
+        return DB::transaction(function () use ($supplier, $supplierAdvanceAccountId, $cashAccountId, $amount, $entryDate, $supplierInvoiceId, $description, $paymentMethod, $paymentReference) {
             $entry = $this->postJournalEntry->handle([
-                'entry_date'       => $entryDate,
-                'description'      => $description ?? "Advance paid to {$supplier->name}",
-                'transaction_type' => TransactionType::SUPPLIER_ADVANCE->value,
-                'source_type'      => SupplierInvoice::class,
-                'source_id'        => $supplierInvoiceId,
-                'purpose'          => $supplierInvoiceId ? 'supplier_advance' : null,
+                'entry_date'        => $entryDate,
+                'description'       => $description ?? "Advance paid to {$supplier->name}",
+                'transaction_type'  => TransactionType::SUPPLIER_ADVANCE->value,
+                'source_type'       => SupplierInvoice::class,
+                'source_id'         => $supplierInvoiceId,
+                'purpose'           => $supplierInvoiceId ? 'supplier_advance' : null,
+                'payment_method'    => $paymentMethod?->value,
+                'payment_reference' => $paymentReference ?: null,
             ], [
                 [
                     'account_id'     => $supplierAdvanceAccountId,

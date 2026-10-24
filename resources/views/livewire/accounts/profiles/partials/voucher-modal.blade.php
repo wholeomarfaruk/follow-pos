@@ -60,6 +60,9 @@
                 <label for="v-date" class="{{ $lbl }}">Date</label>
                 <input id="v-date" type="text" readonly placeholder="YYYY-MM-DD" wire:model="voucher.date" class="flatpickr-only-date cursor-pointer bg-white {{ $input }}">
             </div>
+            <x-payment-method-field method="voucher.method" reference="voucher.reference" :value="$voucher['method'] ?? null"
+                :label="in_array($voucherType, ['collect', 'capital']) ? 'Received by' : 'Paid by'"
+                :input-class="$input" label-class="mb-[6px] block {{ $lbl }}" class="sm:col-span-2 !gap-[12px]" />
             <div class="flex flex-col gap-[6px] {{ $voucherType === 'salary_advance' ? '' : 'sm:col-span-2' }}">
                 <label for="v-account" class="{{ $lbl }}">{{ in_array($voucherType, ['collect', 'capital']) ? 'Received in' : 'Paid from' }}</label>
                 <select id="v-account" wire:model="voucher.account_id" class="{{ $input }}">

@@ -194,6 +194,7 @@
                             <span class="text-sm text-gray-700">Mark as paid now</span>
                         </label>
                         @if($markPaidNow)
+                            <x-payment-method-field method="paymentMethod" reference="paymentReference" :value="$paymentMethod" class="mt-3" />
                             <div class="grid grid-cols-2 gap-4 mt-3">
                                 <div>
                                     <label class="block text-xs font-medium text-gray-600 mb-1.5">Amount Paid <span class="text-red-500">*</span></label>
@@ -220,6 +221,8 @@
                         class="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:bg-gray-50 disabled:text-gray-400">
                     @error('manualAmount') <p class="text-xs text-red-500 mt-1">{{ $message }}</p> @enderror
                 </div>
+
+                <x-payment-method-field method="paymentMethod" reference="paymentReference" :value="$paymentMethod" />
 
                 @unless($editingInvoiceId)
                     <div>
@@ -255,6 +258,10 @@
                         class="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:bg-gray-50 disabled:text-gray-400">
                     @error('manualAmount') <p class="text-xs text-red-500 mt-1">{{ $message }}</p> @enderror
                 </div>
+
+                @if($invoiceType === 'advance')
+                    <x-payment-method-field method="paymentMethod" reference="paymentReference" :value="$paymentMethod" />
+                @endif
 
                 @if($invoiceType === 'advance' && ! $editingIsLocked)
                     <div>

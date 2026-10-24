@@ -4,10 +4,10 @@ namespace App\Actions\Sales;
 
 use App\Actions\Accounts\PostCustomerAdvance;
 use App\Concerns\CreatesMasterProfile;
+use App\Enums\PaymentMethod;
 use App\Enums\Product\ProductType;
 use App\Enums\Sales\OrderPaymentType;
 use App\Enums\Sales\OrderStatus;
-use App\Enums\Sales\PaymentMethod;
 use App\Enums\Sales\PaymentStatus;
 use App\Models\Account;
 use App\Models\Customer;
@@ -291,11 +291,7 @@ class PlaceBulkOrder
 
         $order->payments()->create([
             'type'            => OrderPaymentType::PAYMENT,
-            'payment_method'  => $account ? match ($account->subtype) {
-                'bank'           => PaymentMethod::BANK,
-                'mobile_banking' => PaymentMethod::BKASH,
-                default          => PaymentMethod::CASH,
-            } : (PaymentMethod::tryFrom((string) $method) ?? PaymentMethod::CASH),
+            'payment_method'  => $account ? PaymentMethod::forAccount($account) : (PaymentMethod::tryFrom((string) $method) ?? PaymentMethod::CASH),
             'cash_account_id' => $account?->id,
             'amount'          => $amount,
             'status'          => PaymentStatus::PAID,

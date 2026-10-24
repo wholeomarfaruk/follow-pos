@@ -6,6 +6,7 @@ use App\Actions\Accounts\PostJournalEntry;
 use App\Actions\Accounts\ReverseJournalEntry;
 use App\Enums\Accounts\JournalEntryStatus;
 use App\Enums\Accounts\TransactionType;
+use App\Enums\PaymentMethod;
 use App\Enums\Purchase\SupplierInvoiceType;
 use App\Models\Account;
 use App\Models\AccountsCustomerInvoice;
@@ -107,6 +108,8 @@ class Vouchers
                 'master_profile_id' => $data['profile_id'] ?? null,
                 'party_label'      => $data['party_label'] ?? null,
                 'money_account_id' => $data['money_account_id'] ?? null,
+                'payment_method'   => $this->paymentMethodFor($type, $data),
+                'payment_reference' => ($data['payment_reference'] ?? null) ?: null,
                 'status'           => $future ? JournalEntryStatus::SCHEDULED : JournalEntryStatus::DRAFT,
                 'scheduled_for'    => $future ? $data['date'] : null,
                 'created_by'       => ($by ?? auth()->user())?->id,
@@ -148,6 +151,27 @@ class Vouchers
     }
 
     /** Replace a draft's / rejected voucher's lines and header ("Edit", "Edit & resubmit"). */
+    /**
+     * How a voucher's money moved: what the form chose, else (for vouchers
+     * created without a picker — quick expenses, courier settlements, cash
+     * adjustments) the best guess from its money account. Transfers and
+     * journals don't carry one.
+     */
+    protected function paymentMethodFor(?string $type, array $data): ?string
+    {
+        if (! in_array($type, ['receipt', 'payment', 'expense'], true)) {
+            return null;
+        }
+
+        if (! empty($data['payment_method'])) {
+            return $data['payment_method'];
+        }
+
+        return empty($data['money_account_id'])
+            ? null
+            : PaymentMethod::forAccount(Account::find($data['money_account_id']))->value;
+    }
+
     public function update(JournalEntry $entry, array $data, array $files = []): JournalEntry
     {
         $this->assertEditable($entry);
@@ -178,6 +202,8 @@ class Vouchers
                 'master_profile_id' => $data['profile_id'] ?? null,
                 'party_label'       => $data['party_label'] ?? null,
                 'money_account_id'  => $data['money_account_id'] ?? null,
+                'payment_method'    => $this->paymentMethodFor($entry->voucher_type, $data),
+                'payment_reference' => ($data['payment_reference'] ?? null) ?: null,
                 'status'            => $future ? JournalEntryStatus::SCHEDULED : JournalEntryStatus::DRAFT,
                 'scheduled_for'     => $future ? $data['date'] : null,
                 'approved_by'       => null,
@@ -769,6 +795,8 @@ class Vouchers
                         'invoice_number' => $entry->voucher_ref,
                         'type'           => SupplierInvoiceType::PAYMENT,
                         'amount'         => (float) $line->debit,
+                        'payment_method' => $entry->payment_method,
+                        'payment_reference' => $entry->payment_reference,
                         'invoice_date'   => $entry->entry_date->toDateString(),
                         'notes'          => $entry->description,
                     ]);

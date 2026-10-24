@@ -4,10 +4,12 @@ namespace App\Livewire\Admin\Accounts;
 
 use App\Actions\Accounts\ApplySupplierAdvance;
 use App\Actions\Accounts\PostSupplierPayment;
+use App\Enums\PaymentMethod;
 use App\Models\Account;
 use App\Models\AccountsSupplierAdvance;
 use App\Models\AccountsSupplierBill;
 use App\Models\Supplier;
+use Illuminate\Validation\Rule;
 use Livewire\Component;
 use Livewire\WithPagination;
 
@@ -28,6 +30,8 @@ class Payables extends Component
     public ?int $paySupplierId = null;
     public string $payAmount = '';
     public ?int $payCashAccountId = null;
+    public string $payMethod = 'cash';
+    public string $payReference = '';
     public string $payDate = '';
     /** @var array<int, bool> */
     public array $selectedBills = [];
@@ -43,7 +47,22 @@ class Payables extends Component
         $this->payAmount = '';
         $this->payDate = now()->toDateString();
         $this->selectedBills = [];
+        $this->payMethod = PaymentMethod::CASH->value;
+        $this->payReference = '';
+        $this->updatedPayMethod();
         $this->resetValidation();
+    }
+
+    /** Pre-picks the "Paid from" account matching the chosen method. */
+    public function updatedPayMethod(): void
+    {
+        $accountId = PaymentMethod::tryFrom($this->payMethod)?->pickAccount(
+            Account::active()->whereIn('subtype', ['cash', 'bank', 'mobile_banking'])->orderBy('code')->get()
+        );
+
+        if ($accountId) {
+            $this->payCashAccountId = $accountId;
+        }
     }
 
     public function openApplyAdvanceModal(int $advanceId): void
@@ -92,6 +111,8 @@ class Payables extends Component
         $this->validate([
             'payAmount'        => 'required|numeric|gt:0',
             'payCashAccountId' => 'required|exists:accounts,id',
+            'payMethod'        => ['required', Rule::in(PaymentMethod::values(PaymentMethod::manual()))],
+            'payReference'     => 'nullable|string|max:100',
             'payDate'          => 'required|date',
         ]);
 
@@ -113,6 +134,8 @@ class Payables extends Component
             (float) $this->payAmount,
             $this->payDate,
             $allocations,
+            paymentMethod: PaymentMethod::from($this->payMethod),
+            paymentReference: $this->payReference ?: null,
         );
 
         $this->paySupplierId = null;

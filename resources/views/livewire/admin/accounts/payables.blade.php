@@ -70,6 +70,8 @@
                         <input type="number" step="0.01" wire:model="payAmount" class="w-full px-3 py-2 text-sm rounded-lg border border-gray-300">
                         @error('payAmount') <p class="text-xs text-red-500 mt-1">{{ $message }}</p> @enderror
                     </div>
+                    <x-payment-method-field method="payMethod" reference="payReference" :value="$payMethod"
+                        input-class="w-full px-3 py-2 text-sm rounded-lg border border-gray-300" label-class="block text-sm text-gray-600 mb-1" />
                     <div>
                         <label class="block text-sm text-gray-600 mb-1">Paid from</label>
                         <select wire:model="payCashAccountId" class="w-full px-3 py-2 text-sm rounded-lg border border-gray-300">

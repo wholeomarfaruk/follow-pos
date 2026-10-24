@@ -22,7 +22,7 @@ use Illuminate\Support\Facades\DB;
 class PostJournalEntry
 {
     /**
-     * @param  array{entry_date: string, description?: ?string, transaction_type: string, source_type?: ?string, source_id?: ?int, purpose?: ?string, status?: string}  $header
+     * @param  array{entry_date: string, description?: ?string, transaction_type: string, source_type?: ?string, source_id?: ?int, purpose?: ?string, status?: string, payment_method?: ?string, payment_reference?: ?string}  $header
      * @param  list<array{account_id: int, debit?: float|string, credit?: float|string, memo?: ?string, subledger_type?: ?string, subledger_id?: ?int}>  $lines
      */
     public function handle(array $header, array $lines): JournalEntry
@@ -55,6 +55,10 @@ class PostJournalEntry
                 'source_id'         => $sourceId,
                 'purpose'           => $purpose,
                 'fiscal_period_id'  => $fiscalPeriod?->id,
+                // How the money moved (App\Enums\PaymentMethod value) and its
+                // reference, when the entry moves cash / bank / MFS money.
+                'payment_method'    => $header['payment_method'] ?? null,
+                'payment_reference' => $header['payment_reference'] ?? null,
                 'created_by'        => auth()->id(),
                 'posted_by'         => $status === JournalEntryStatus::POSTED ? auth()->id() : null,
                 'posted_at'         => $status === JournalEntryStatus::POSTED ? now() : null,

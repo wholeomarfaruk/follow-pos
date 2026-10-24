@@ -242,7 +242,7 @@
 
                         <div class="grid grid-cols-2 gap-2 pt-1">
                             <select wire:model.live="paymentMethod" class="rounded-lg border border-gray-300 px-2 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500">
-                                @foreach (\App\Livewire\Admin\Sales\PosScreen::PAYMENT_METHODS as $value => $label)
+                                @foreach (\App\Livewire\Admin\Sales\PosScreen::paymentMethods() as $value => $label)
                                     <option value="{{ $value }}">{{ $label }}</option>
                                 @endforeach
                             </select>

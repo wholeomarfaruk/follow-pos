@@ -3,6 +3,7 @@
 namespace App\Actions\Accounts;
 
 use App\Enums\Accounts\TransactionType;
+use App\Enums\PaymentMethod;
 use App\Enums\Purchase\SupplierInvoiceType;
 use App\Models\AccountsPaymentAllocation;
 use App\Models\AccountsSupplierBill;
@@ -40,12 +41,16 @@ class PostSupplierPayment
         ?string $description = null,
         bool $recordSupplierInvoice = true,
         ?string $invoiceNumber = null,
+        ?PaymentMethod $paymentMethod = null,
+        ?string $paymentReference = null,
     ): JournalEntry {
-        return DB::transaction(function () use ($supplier, $payableAccountId, $cashAccountId, $amount, $entryDate, $allocations, $description, $recordSupplierInvoice, $invoiceNumber) {
+        return DB::transaction(function () use ($supplier, $payableAccountId, $cashAccountId, $amount, $entryDate, $allocations, $description, $recordSupplierInvoice, $invoiceNumber, $paymentMethod, $paymentReference) {
             $paymentEntry = $this->postJournalEntry->handle([
-                'entry_date'       => $entryDate,
-                'description'      => $description ?? "Payment to {$supplier->name}",
-                'transaction_type' => TransactionType::SUPPLIER_PAYMENT->value,
+                'entry_date'        => $entryDate,
+                'description'       => $description ?? "Payment to {$supplier->name}",
+                'transaction_type'  => TransactionType::SUPPLIER_PAYMENT->value,
+                'payment_method'    => $paymentMethod?->value,
+                'payment_reference' => $paymentReference ?: null,
             ], [
                 [
                     'account_id'     => $payableAccountId,
@@ -86,6 +91,8 @@ class PostSupplierPayment
                     'invoice_number' => $invoiceNumber,
                     'type'           => SupplierInvoiceType::PAYMENT,
                     'amount'         => $amount,
+                    'payment_method' => $paymentMethod,
+                    'payment_reference' => $paymentReference ?: null,
                     'invoice_date'   => $entryDate,
                 ]);
             }

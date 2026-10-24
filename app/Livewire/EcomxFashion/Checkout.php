@@ -3,6 +3,7 @@
 namespace App\Livewire\EcomxFashion;
 
 use App\Concerns\CreatesMasterProfile;
+use App\Enums\PaymentMethod;
 use App\Enums\Sales\OrderSource;
 use App\Enums\Sales\PaymentStatus;
 use App\Enums\User\Status;
@@ -27,6 +28,7 @@ use App\Services\OfferService;
 use App\Support\PhoneNumber;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use Livewire\Component;
 use Livewire\Attributes\Layout;
 
@@ -240,7 +242,7 @@ class Checkout extends Component
             ];
 
         return $addressRules + $this->shippingRules() + [
-            'payment_method' => 'required|in:cod,bkash',
+            'payment_method' => ['required', Rule::in(PaymentMethod::values(PaymentMethod::checkout()))],
             'transaction_id' => 'required_if:payment_method,bkash|nullable|string|max:100',
         ];
     }
@@ -362,9 +364,9 @@ class Checkout extends Component
 
                 $order->recalculateTotals();
 
-                if ($this->payment_method === 'bkash') {
+                if ($this->payment_method === PaymentMethod::BKASH->value) {
                     $order->payments()->create([
-                        'payment_method' => 'bkash',
+                        'payment_method' => PaymentMethod::BKASH,
                         'transaction_id' => $this->transaction_id,
                         'amount' => $order->total_amount,
                         'status' => PaymentStatus::PENDING,

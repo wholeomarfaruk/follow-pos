@@ -47,7 +47,7 @@
             <tr><td class="muted" style="width: 120px">Employee</td><td><b>{{ $i->profile?->display_name }}</b> · {{ $i->profile?->code }}</td>
                 <td class="muted" style="width: 110px">Designation</td><td>{{ $set['designation'] ?? '—' }}</td></tr>
             <tr><td class="muted">Department</td><td>{{ $set['department'] ?? '—' }}</td>
-                <td class="muted">Paid via</td><td>{{ ['cash' => 'Cash', 'bkash' => 'bKash', 'nagad' => 'Nagad', 'bank' => 'Bank'][$set['pay_via'] ?? ''] ?? '—' }}{{ ! empty($set['pay_account']) ? ' · ' . $set['pay_account'] : '' }}</td></tr>
+                <td class="muted">Paid via</td><td>{{ \App\Enums\PaymentMethod::tryFrom((string) ($set['pay_via'] ?? ''))?->label() ?? '—' }}{{ ! empty($set['pay_account']) ? ' · ' . $set['pay_account'] : '' }}</td></tr>
         </table>
         <table style="margin-top: 14px; border: 1px solid #e5e7eb">
             <thead><tr style="background: #f9fafb; text-align: left"><th>Earnings</th><th class="num">৳</th><th style="border-left: 1px solid #e5e7eb">Deductions</th><th class="num">৳</th></tr></thead>

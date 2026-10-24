@@ -3,6 +3,7 @@
 namespace App\Livewire\Accounts;
 
 use App\Enums\Accounts\TransactionType;
+use App\Enums\PaymentMethod;
 use App\Models\AccountsSupplierBill;
 use App\Models\Installment;
 use App\Models\LoanRepaymentSchedule;
@@ -18,6 +19,7 @@ use App\Support\Bdt;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\On;
@@ -187,7 +189,10 @@ class Payables extends Component
                 continue;
             }
             try {
-                $made[] = $this->draftFor($row, (int) $this->payFrom, $row['amount'], today()->toDateString())->ref();
+                $entry = $this->draftFor($row, (int) $this->payFrom, $row['amount'], today()->toDateString());
+                // No method picker on the bulk action — taken from the pay-from account.
+                $entry->update(['payment_method' => PaymentMethod::forAccount(collect($this->cashAccounts)->firstWhere('id', (int) $this->payFrom))]);
+                $made[] = $entry->ref();
             } catch (RuntimeException $e) {
                 $skipped[] = "{$row['payee']} ({$e->getMessage()})";
             }
@@ -204,13 +209,33 @@ class Payables extends Component
         $row = $this->all->firstWhere('key', $key);
         abort_unless($row, 404);
         $this->payKey = $key;
-        $this->pay = ['account_id' => $this->payFrom, 'amount' => $row['amount'], 'date' => today()->toDateString()];
+        $this->pay = [
+            'account_id' => $this->payFrom,
+            'method'     => PaymentMethod::forAccount(collect($this->cashAccounts)->firstWhere('id', (int) $this->payFrom))->value,
+            'reference'  => '',
+            'amount'     => $row['amount'],
+            'date'       => today()->toDateString(),
+        ];
+    }
+
+    /** Choosing a method pre-picks the matching pay-from account. */
+    public function updatedPay($value, $key): void
+    {
+        if ($key === 'method' && ($accountId = PaymentMethod::tryFrom((string) $value)?->pickAccount($this->cashAccounts))) {
+            $this->pay['account_id'] = $accountId;
+        }
     }
 
     public function savePay(bool $post = false): void
     {
         AccountsAccess::authorize('create');
-        $this->validate(['pay.account_id' => 'required|integer|exists:accounts,id', 'pay.amount' => 'required|numeric|min:1', 'pay.date' => 'required|date'], [], ['pay.amount' => 'amount', 'pay.account_id' => 'pay from']);
+        $this->validate([
+            'pay.account_id' => 'required|integer|exists:accounts,id',
+            'pay.method'     => ['required', Rule::in(PaymentMethod::values(PaymentMethod::manual()))],
+            'pay.reference'  => 'nullable|string|max:100',
+            'pay.amount'     => 'required|numeric|min:1',
+            'pay.date'       => 'required|date',
+        ], [], ['pay.amount' => 'amount', 'pay.account_id' => 'pay from', 'pay.method' => 'payment method']);
         $row = $this->all->firstWhere('key', $this->payKey);
         if (! $row) {
             $this->payKey = null;
@@ -220,6 +245,7 @@ class Payables extends Component
 
         try {
             $entry = $this->draftFor($row, (int) $this->pay['account_id'], round((float) $this->pay['amount'], 2), $this->pay['date']);
+            $entry->update(['payment_method' => $this->pay['method'], 'payment_reference' => $this->pay['reference'] ?: null]);
             $message = "{$entry->ref()} created as draft.";
             if ($post) {
                 app(Vouchers::class)->post($entry);

@@ -3,6 +3,7 @@
 namespace App\Livewire\Accounts\Profiles;
 
 use App\Actions\Profiles\Payroll;
+use App\Enums\PaymentMethod;
 use App\Exceptions\Accounts\LockedFiscalPeriodException;
 use App\Livewire\Accounts\Profiles\Concerns\HandlesVoucherModals;
 use App\Models\MasterProfile;
@@ -97,7 +98,7 @@ class Employees extends Component
                 'status'      => $item ? ($item->unpaid() > 0.5 ? Bdt::money($item->unpaid()) . ' বাকি' : 'Paid') : '—',
                 'statusPaid'  => $item ? $item->unpaid() <= 0.5 : null,
                 'owed'        => $owed,
-                'via'         => ['cash' => 'Cash', 'bkash' => 'bKash', 'nagad' => 'Nagad', 'bank' => 'Bank'][$set['pay_via'] ?? ''] ?? '—',
+                'via'         => PaymentMethod::tryFrom((string) ($set['pay_via'] ?? ''))?->label() ?? '—',
                 'login'       => $user ? ($user->roles->first()?->name ? ucfirst($user->roles->first()->name) : 'Login') : null,
             ];
         });

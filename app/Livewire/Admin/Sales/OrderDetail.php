@@ -10,11 +10,11 @@ use App\Actions\Accounts\RefundOrder;
 use App\Actions\Accounts\ReverseOrder;
 use App\Actions\Sales\DuplicateOrder;
 use App\Actions\Sales\PackOrderItem;
+use App\Enums\PaymentMethod;
 use App\Enums\Sales\CourierStatus;
 use App\Enums\Sales\FulfillmentStatus;
 use App\Enums\Sales\OrderPaymentType;
 use App\Enums\Sales\OrderStatus;
-use App\Enums\Sales\PaymentMethod;
 use App\Enums\Sales\PaymentStatus;
 use App\Exceptions\Inventory\InsufficientStockException;
 use App\Livewire\Admin\Sales\Concerns\SendsPurchaseToMeta;
@@ -593,11 +593,7 @@ class OrderDetail extends Component
      */
     protected function paymentMethodForAccount(?Account $account): PaymentMethod
     {
-        return match ($account?->subtype) {
-            'bank' => PaymentMethod::BANK,
-            'mobile_banking' => PaymentMethod::BKASH,
-            default => PaymentMethod::CASH,
-        };
+        return PaymentMethod::forAccount($account);
     }
 
     /**

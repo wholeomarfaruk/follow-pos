@@ -9,6 +9,7 @@ use App\Actions\Accounts\PostSupplierPayment;
 use App\Actions\Accounts\PostSupplierReturn;
 use App\Actions\Accounts\UnpostSupplierInvoice;
 use App\Enums\Accounts\TransactionType;
+use App\Enums\PaymentMethod;
 use App\Enums\Purchase\SupplierInvoiceType;
 use App\Exceptions\Accounts\DuplicateJournalEntryException;
 use App\Exceptions\Purchase\SupplierInvoiceDeletionException;
@@ -49,6 +50,12 @@ trait HandlesSupplierInvoiceModal
     // Which cash/bank account an "advance" or "payment" moved through.
     public string $advanceCashAccountId = '';
     public string $paymentCashAccountId = '';
+
+    // How that money moved (App\Enums\PaymentMethod) and its reference —
+    // shared by the advance, payment and "mark as paid now" sections, since
+    // only one of them is on screen at a time.
+    public string $paymentMethod    = 'cash';
+    public string $paymentReference = '';
 
     // PO-based auto-fill (optional — a PO of the current supplier can be
     // selected to pull its line items in, fully editable afterwards)
@@ -109,13 +116,80 @@ trait HandlesSupplierInvoiceModal
         $this->reset([
             'editingInvoiceId', 'editingIsLocked', 'invoiceType', 'invoiceNumber', 'invoiceIsAdjusted',
             'invoiceNotes', 'purchaseOrderId', 'items', 'productSearch', 'manualAmount', 'documentIds',
-            'advanceCashAccountId', 'paymentCashAccountId', 'paymentBills',
+            'advanceCashAccountId', 'paymentCashAccountId', 'paymentBills', 'paymentMethod', 'paymentReference',
             'markPaidNow', 'payNowAmount', 'payNowCashAccountId', ...$this->extraInvoiceModalResetKeys(),
         ]);
         $this->invoiceType = 'purchase';
         $this->invoiceDate = now()->format('Y-m-d');
+        $this->updatedPaymentMethod();
         $this->resetValidation();
         $this->invoiceModal = true;
+    }
+
+    /**
+     * Picking a method pre-selects the matching "Paid from" account (bKash →
+     * the bKash wallet, cheque → a bank account, …) in every money section —
+     * still changeable by hand afterwards.
+     */
+    public function updatedPaymentMethod(): void
+    {
+        $accountId = PaymentMethod::tryFrom($this->paymentMethod)?->pickAccount($this->moneyAccounts());
+
+        if (! $accountId) {
+            return;
+        }
+
+        $this->paymentCashAccountId = (string) $accountId;
+        $this->advanceCashAccountId = (string) $accountId;
+        $this->payNowCashAccountId  = (string) $accountId;
+    }
+
+    /** Active cash / bank / MFS accounts money can be paid from. */
+    protected function moneyAccounts()
+    {
+        return Account::active()->whereIn('subtype', ['cash', 'bank', 'mobile_banking'])->orderBy('code')->get();
+    }
+
+    protected function paymentMethodRules(): array
+    {
+        return [
+            'paymentMethod'    => ['required', Rule::in(PaymentMethod::values(PaymentMethod::manual()))],
+            'paymentReference' => 'nullable|string|max:100',
+        ];
+    }
+
+    protected function chosenPaymentMethod(): PaymentMethod
+    {
+        return PaymentMethod::from($this->paymentMethod);
+    }
+
+    /** Advance and payment invoices are money moving; purchase / return aren't. */
+    protected function movesMoney(SupplierInvoiceType $type): bool
+    {
+        return in_array($type, [SupplierInvoiceType::ADVANCE, SupplierInvoiceType::PAYMENT], true);
+    }
+
+    /**
+     * Keeps the method on the invoice's own live (not reversed) journal
+     * entries in step after an edit — metadata only, the lines are never
+     * touched. A payment's entry isn't linked back to its invoice, so this
+     * reaches advances (and anything else sourced from the invoice).
+     */
+    protected function syncEntryPaymentMethod(SupplierInvoice $invoice): void
+    {
+        if (! $this->movesMoney($invoice->type)) {
+            return;
+        }
+
+        $invoice->journalEntries()
+            ->where('transaction_type', '!=', TransactionType::REVERSAL->value)
+            ->whereNotExists(fn ($q) => $q->select(DB::raw(1))
+                ->from('journal_entries as reversal')
+                ->whereColumn('reversal.reversed_journal_entry_id', 'journal_entries.id'))
+            ->update([
+                'payment_method'    => $invoice->payment_method?->value,
+                'payment_reference' => $invoice->payment_reference,
+            ]);
     }
 
     /**
@@ -157,7 +231,7 @@ trait HandlesSupplierInvoiceModal
     {
         $invoice = SupplierInvoice::with('items')->findOrFail($id);
 
-        $this->reset(['items', 'productSearch', 'manualAmount', 'purchaseOrderId', 'advanceCashAccountId', 'paymentCashAccountId', 'paymentBills']);
+        $this->reset(['items', 'productSearch', 'manualAmount', 'purchaseOrderId', 'advanceCashAccountId', 'paymentCashAccountId', 'paymentBills', 'paymentMethod', 'paymentReference']);
 
         $this->editingInvoiceId  = $invoice->id;
         // A "payment" invoice's amount is already applied against specific
@@ -172,6 +246,8 @@ trait HandlesSupplierInvoiceModal
         $this->invoiceNotes      = $invoice->notes ?? '';
         $this->manualAmount      = (string) $invoice->amount;
         $this->documentIds       = $invoice->document_ids ?? [];
+        $this->paymentMethod     = $invoice->payment_method?->value ?? PaymentMethod::CASH->value;
+        $this->paymentReference  = $invoice->payment_reference ?? '';
         $this->items             = $invoice->items->map(fn ($item) => [
             'variant_id'             => $item->product_variant_id ? "v:{$item->product_variant_id}" : '',
             'purchase_order_item_id' => $item->purchase_order_item_id ? (string) $item->purchase_order_item_id : '',
@@ -438,11 +514,13 @@ trait HandlesSupplierInvoiceModal
 
         if ($this->invoiceType === SupplierInvoiceType::ADVANCE->value) {
             $rules['advanceCashAccountId'] = 'required|exists:accounts,id';
+            $rules += $this->paymentMethodRules();
         }
 
         if ($this->invoiceType === SupplierInvoiceType::PURCHASE->value && $this->markPaidNow) {
             $rules['payNowAmount']        = 'required|numeric|min:0.01';
             $rules['payNowCashAccountId'] = 'required|exists:accounts,id';
+            $rules += $this->paymentMethodRules();
         }
 
         $this->validate($rules);
@@ -473,6 +551,8 @@ trait HandlesSupplierInvoiceModal
                 'invoice_number'    => $this->invoiceNumber ?: null,
                 'type'              => $this->invoiceType,
                 'amount'            => $amount,
+                'payment_method'    => $this->invoiceType === SupplierInvoiceType::ADVANCE->value ? $this->paymentMethod : null,
+                'payment_reference' => $this->invoiceType === SupplierInvoiceType::ADVANCE->value ? ($this->paymentReference ?: null) : null,
                 'is_adjusted'       => $this->invoiceIsAdjusted,
                 'invoice_date'      => $this->invoiceDate ?: null,
                 'notes'             => $this->invoiceNotes ?: null,
@@ -594,6 +674,7 @@ trait HandlesSupplierInvoiceModal
             'invoiceNotes'         => 'nullable|string',
             'manualAmount'         => 'required|numeric|min:0.01',
             'paymentCashAccountId' => 'required|exists:accounts,id',
+            ...$this->paymentMethodRules(),
         ]);
 
         $allocations = collect($this->paymentBills)
@@ -614,6 +695,8 @@ trait HandlesSupplierInvoiceModal
             allocations: $allocations,
             description: $this->invoiceNotes ?: null,
             invoiceNumber: $this->invoiceNumber ?: null,
+            paymentMethod: $this->chosenPaymentMethod(),
+            paymentReference: $this->paymentReference ?: null,
         );
 
         activity('purchase')
@@ -640,6 +723,8 @@ trait HandlesSupplierInvoiceModal
             amount: (float) $this->payNowAmount,
             entryDate: $this->invoiceDate ?: now()->toDateString(),
             allocations: [$bill->id => min((float) $this->payNowAmount, $bill->amountDue())],
+            paymentMethod: $this->chosenPaymentMethod(),
+            paymentReference: $this->paymentReference ?: null,
         );
     }
 
@@ -668,10 +753,13 @@ trait HandlesSupplierInvoiceModal
 
     protected function updateInvoiceMetadata(SupplierInvoice $invoice): void
     {
+        $movesMoney = $this->movesMoney($invoice->type);
+
         $this->validate([
             'invoiceNumber' => 'nullable|string|max:100',
             'invoiceDate'   => 'nullable|date',
             'invoiceNotes'  => 'nullable|string',
+            ...($movesMoney ? $this->paymentMethodRules() : []),
         ]);
 
         $invoice->update([
@@ -680,7 +768,10 @@ trait HandlesSupplierInvoiceModal
             'invoice_date'   => $this->invoiceDate ?: null,
             'notes'          => $this->invoiceNotes ?: null,
             'document_ids'   => $this->documentIds ?: null,
+            ...($movesMoney ? ['payment_method' => $this->paymentMethod, 'payment_reference' => $this->paymentReference ?: null] : []),
         ]);
+
+        $this->syncEntryPaymentMethod($invoice);
 
         activity('purchase')
             ->causedBy(auth()->user())
@@ -716,6 +807,11 @@ trait HandlesSupplierInvoiceModal
             $rules['advanceCashAccountId'] = 'required|exists:accounts,id';
         }
 
+        $isAdvance = $this->invoiceType === SupplierInvoiceType::ADVANCE->value;
+        if ($isAdvance) {
+            $rules += $this->paymentMethodRules();
+        }
+
         $this->validate($rules);
 
         // A payment is applied to specific bills when it's created — turning
@@ -736,11 +832,13 @@ trait HandlesSupplierInvoiceModal
         }
 
         try {
-            DB::transaction(function () use ($invoice, $amount, $usesItems, $originalType, $originalAmount) {
+            DB::transaction(function () use ($invoice, $amount, $usesItems, $originalType, $originalAmount, $isAdvance) {
                 $invoice->update([
                     'invoice_number' => $this->invoiceNumber ?: null,
                     'type'           => $this->invoiceType,
                     'amount'         => $amount,
+                    'payment_method' => $isAdvance ? $this->paymentMethod : null,
+                    'payment_reference' => $isAdvance ? ($this->paymentReference ?: null) : null,
                     'is_adjusted'    => $this->invoiceIsAdjusted,
                     'invoice_date'   => $this->invoiceDate ?: null,
                     'notes'          => $this->invoiceNotes ?: null,
@@ -748,6 +846,7 @@ trait HandlesSupplierInvoiceModal
                 ]);
 
                 $this->reconcileAccountsOnEdit($invoice, $originalType, $originalAmount);
+                $this->syncEntryPaymentMethod($invoice);
 
                 $invoice->items()->delete();
 
@@ -817,6 +916,8 @@ trait HandlesSupplierInvoiceModal
                 entryDate: $invoice->invoice_date?->toDateString() ?? now()->toDateString(),
                 supplierInvoiceId: $invoice->id,
                 description: "Advance invoice #{$invoice->serial_number} — {$invoice->supplier->name}",
+                paymentMethod: $invoice->payment_method,
+                paymentReference: $invoice->payment_reference,
             );
         } catch (DuplicateJournalEntryException) {
             // Already posted for this invoice — nothing to do.

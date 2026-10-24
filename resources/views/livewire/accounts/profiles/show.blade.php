@@ -332,7 +332,7 @@
                             'supplier' => ['Category' => $s['category'] ?? '—', 'Terms' => \App\Livewire\Accounts\Profiles\Suppliers::TERMS[$s['terms'] ?? 'cash'] ?? '—', 'Pay to' => $s['payout_account'] ?? '—'],
                             'lender'   => ['Type' => ['bank' => 'Bank / NBFI', 'business' => 'Business', 'personal' => 'Personal'][$s['lender_type'] ?? ''] ?? '—', 'Loans' => $p->loans()->count()],
                             'owner'    => ['Profit share' => isset($s['share_percent']) ? $s['share_percent'] . '%' : '—'],
-                            'employee' => ['Designation' => $s['designation'] ?? '—', 'Department' => $s['department'] ?? '—', 'Salary' => isset($s['salary']) ? $money($s['salary']) : '—', 'Paid via' => ucfirst($s['pay_via'] ?? '—'), 'Login' => $p->user?->email ?? 'No access'],
+                            'employee' => ['Designation' => $s['designation'] ?? '—', 'Department' => $s['department'] ?? '—', 'Salary' => isset($s['salary']) ? $money($s['salary']) : '—', 'Paid via' => \App\Enums\PaymentMethod::tryFrom((string) ($s['pay_via'] ?? ''))?->label() ?? '—', 'Login' => $p->user?->email ?? 'No access'],
                             default    => [],
                         };
                     @endphp

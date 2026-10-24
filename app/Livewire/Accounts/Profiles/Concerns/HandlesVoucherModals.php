@@ -5,13 +5,18 @@ namespace App\Livewire\Accounts\Profiles\Concerns;
 use App\Actions\Profiles\LoanKisti;
 use App\Actions\Profiles\Payroll;
 use App\Actions\Profiles\ProfileVouchers;
+use App\Enums\PaymentMethod;
+use App\Models\JournalEntry;
 use App\Models\Loan;
 use App\Models\MasterProfile;
+use App\Models\SupplierInvoice;
 use App\Services\Profiles\LedgerAccounts;
 use App\Services\Profiles\ProfileBalances;
 use App\Services\Profiles\ProfileCounts;
 use App\Support\Bdt;
 use App\Support\BdPhone;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 use Livewire\Attributes\Computed;
 use RuntimeException;
 
@@ -70,6 +75,8 @@ trait HandlesVoucherModals
             'amount'     => null,
             'monthly'    => null,
             'account_id' => $this->defaultCashAccount(),
+            'method'     => PaymentMethod::forAccount(collect($this->cashAccounts)->firstWhere('id', $this->defaultCashAccount()))->value,
+            'reference'  => '',
             'date'       => today()->toDateString(),
             'note'       => '',
         ];
@@ -98,6 +105,11 @@ trait HandlesVoucherModals
     {
         if ($key === 'loan_id') {
             $this->suggestAmount();
+        }
+
+        // Choosing a method pre-picks the matching cash / bank / wallet account.
+        if ($key === 'method' && ($accountId = PaymentMethod::tryFrom((string) $value)?->pickAccount($this->cashAccounts))) {
+            $this->voucher['account_id'] = $accountId;
         }
     }
 
@@ -155,6 +167,8 @@ trait HandlesVoucherModals
             'voucher.profile_id' => 'required|integer|exists:master_profiles,id',
             'voucher.amount'     => 'required|numeric|min:1',
             'voucher.account_id' => 'required|integer|exists:accounts,id',
+            'voucher.method'     => ['required', Rule::in(PaymentMethod::values(PaymentMethod::manual()))],
+            'voucher.reference'  => 'nullable|string|max:100',
             'voucher.date'       => 'required|date',
             'voucher.note'       => 'nullable|string|max:255',
             'voucher.monthly'    => $type === 'salary_advance' ? 'nullable|numeric|min:0' : 'nullable',
@@ -163,6 +177,7 @@ trait HandlesVoucherModals
             'voucher.profile_id' => 'party',
             'voucher.amount'     => 'amount',
             'voucher.account_id' => 'account',
+            'voucher.method'     => 'payment method',
             'voucher.loan_id'    => 'loan',
         ]);
 
@@ -185,16 +200,31 @@ trait HandlesVoucherModals
         $vouchers = app(ProfileVouchers::class);
 
         try {
-            $message = match ($type) {
-                'collect' => $this->done($vouchers->collect($p, $amount, (int) $v['account_id'], $v['date'], $v['note'] ?: null), 'Collected ' . Bdt::money($amount)),
-                'pay' => $this->done($vouchers->pay($p, $amount, (int) $v['account_id'], $v['date'], $v['note'] ?: null), 'Paid ' . Bdt::money($amount)),
-                'supplier_advance' => $this->done($vouchers->supplierAdvance($p, $amount, (int) $v['account_id'], $v['date'], $v['note'] ?: null), 'Advance ' . Bdt::money($amount) . ' given'),
-                'capital' => $this->done($vouchers->addCapital($p, $amount, (int) $v['account_id'], $v['date'], $v['note'] ?: null), 'Capital ' . Bdt::money($amount) . ' added'),
-                'drawing' => $this->done($vouchers->drawing($p, $amount, (int) $v['account_id'], $v['date'], $v['note'] ?: null), 'Drawing ' . Bdt::money($amount) . ' recorded'),
-                'salary' => $this->done(app(Payroll::class)->pay($p, $amount, (int) $v['account_id'], $v['date']), 'Salary ' . Bdt::money($amount) . ' paid'),
-                'salary_advance' => $this->done(app(Payroll::class)->advance($p, $amount, (float) ($v['monthly'] ?: $amount), (int) $v['account_id'], $v['date']), 'Advance ' . Bdt::money($amount) . ' given'),
-                'kisti' => $this->kistiPaid(app(LoanKisti::class)->pay(Loan::findOrFail($v['loan_id']), $amount, (int) $v['account_id'], $v['date'])),
-            };
+            // The actions below post through PostJournalEntry without a method
+            // of their own, so the method is stamped on what they posted.
+            $lastEntryId = (int) JournalEntry::max('id');
+            $lastSupplierInvoiceId = (int) SupplierInvoice::max('id');
+            $message = DB::transaction(function () use ($type, $p, $v, $amount, $vouchers, $lastEntryId, $lastSupplierInvoiceId) {
+                $message = match ($type) {
+                    'collect' => $this->done($vouchers->collect($p, $amount, (int) $v['account_id'], $v['date'], $v['note'] ?: null), 'Collected ' . Bdt::money($amount)),
+                    'pay' => $this->done($vouchers->pay($p, $amount, (int) $v['account_id'], $v['date'], $v['note'] ?: null), 'Paid ' . Bdt::money($amount)),
+                    'supplier_advance' => $this->done($vouchers->supplierAdvance($p, $amount, (int) $v['account_id'], $v['date'], $v['note'] ?: null), 'Advance ' . Bdt::money($amount) . ' given'),
+                    'capital' => $this->done($vouchers->addCapital($p, $amount, (int) $v['account_id'], $v['date'], $v['note'] ?: null), 'Capital ' . Bdt::money($amount) . ' added'),
+                    'drawing' => $this->done($vouchers->drawing($p, $amount, (int) $v['account_id'], $v['date'], $v['note'] ?: null), 'Drawing ' . Bdt::money($amount) . ' recorded'),
+                    'salary' => $this->done(app(Payroll::class)->pay($p, $amount, (int) $v['account_id'], $v['date']), 'Salary ' . Bdt::money($amount) . ' paid'),
+                    'salary_advance' => $this->done(app(Payroll::class)->advance($p, $amount, (float) ($v['monthly'] ?: $amount), (int) $v['account_id'], $v['date']), 'Advance ' . Bdt::money($amount) . ' given'),
+                    'kisti' => $this->kistiPaid(app(LoanKisti::class)->pay(Loan::findOrFail($v['loan_id']), $amount, (int) $v['account_id'], $v['date'])),
+                };
+                JournalEntry::stampPaymentMethod($lastEntryId, (int) $v['account_id'], PaymentMethod::from($v['method']), $v['reference'] ?: null);
+
+                // pay / supplier_advance also record a row on the supplier's Purchase ledger.
+                SupplierInvoice::where('id', '>', $lastSupplierInvoiceId)
+                    ->whereIn('supplier_id', $p->suppliers()->pluck('id'))
+                    ->whereIn('type', ['payment', 'advance'])
+                    ->update(['payment_method' => $v['method'], 'payment_reference' => $v['reference'] ?: null]);
+
+                return $message;
+            });
         } catch (RuntimeException $e) {
             // Locked period, unbalanced / duplicate entry, missing ledger account.
             $this->addError('voucher.amount', $e->getMessage());

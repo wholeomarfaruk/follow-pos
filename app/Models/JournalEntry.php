@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Enums\Accounts\JournalEntryStatus;
 use App\Enums\Accounts\TransactionType;
+use App\Enums\PaymentMethod;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -15,7 +16,7 @@ class JournalEntry extends Model
         'entry_number', 'entry_date', 'description', 'status', 'transaction_type',
         'source_type', 'source_id', 'purpose', 'reversed_journal_entry_id',
         'fiscal_period_id', 'created_by', 'posted_by', 'posted_at', 'voided_by', 'voided_at',
-        'voucher_ref', 'voucher_type', 'source', 'amount', 'master_profile_id', 'party_label', 'money_account_id',
+        'voucher_ref', 'voucher_type', 'source', 'amount', 'master_profile_id', 'party_label', 'money_account_id', 'payment_method', 'payment_reference',
         'scheduled_for', 'approved_by', 'approved_at', 'rejected_by', 'rejected_at', 'reject_reason', 'meta',
     ];
 
@@ -31,6 +32,7 @@ class JournalEntry extends Model
             'approved_at'      => 'datetime',
             'rejected_at'      => 'datetime',
             'amount'           => 'decimal:2',
+            'payment_method'   => PaymentMethod::class,
             'meta'             => 'array',
         ];
     }
@@ -39,6 +41,26 @@ class JournalEntry extends Model
     public function ref(): string
     {
         return $this->voucher_ref ?: $this->entry_number;
+    }
+
+    /**
+     * Records how the money moved on the entries an action just posted,
+     * for actions that post through PostJournalEntry without a payment
+     * method of their own (Payroll, LoanKisti, ProfileVouchers): every entry
+     * after $afterId, made by the current user, that touches the cash/bank
+     * account the money moved through.
+     */
+    public static function stampPaymentMethod(int $afterId, int $cashAccountId, ?PaymentMethod $method, ?string $reference = null): void
+    {
+        if (! $method) {
+            return;
+        }
+
+        static::query()
+            ->where('id', '>', $afterId)
+            ->where('created_by', auth()->id())
+            ->whereHas('lines', fn ($q) => $q->where('account_id', $cashAccountId))
+            ->update(['payment_method' => $method->value, 'payment_reference' => $reference ?: null]);
     }
 
     public function events(): HasMany

@@ -5,6 +5,7 @@ namespace App\Livewire\Admin\Sales;
 use App\Actions\Accounts\PostOrderPayment;
 use App\Actions\Sales\PackOrderItem;
 use App\Concerns\CreatesMasterProfile;
+use App\Enums\PaymentMethod;
 use App\Enums\Sales\OrderPaymentType;
 use App\Enums\Sales\OrderStatus;
 use App\Enums\Sales\PaymentStatus;
@@ -46,7 +47,13 @@ class PosScreen extends Component
 {
     use CreatesMasterProfile;
 
-    public const PAYMENT_METHODS = ['cash' => 'Cash', 'bkash' => 'bKash', 'nagad' => 'Nagad', 'rocket' => 'Rocket', 'bank' => 'Card / Bank'];
+    /** What the POS method picker offers (value => label), from the shared PaymentMethod list. */
+    public static function paymentMethods(): array
+    {
+        return PaymentMethod::options([
+            PaymentMethod::CASH, PaymentMethod::BKASH, PaymentMethod::NAGAD, PaymentMethod::ROCKET, PaymentMethod::CARD, PaymentMethod::BANK,
+        ]);
+    }
 
     public const WALK_IN_CODE = 'CUS-WALKIN';
 
@@ -73,7 +80,7 @@ class PosScreen extends Component
 
     public bool $sellHeldStock = false;
 
-    public string $paymentMethod  = 'cash';
+    public string $paymentMethod  = PaymentMethod::CASH->value;
     public string $amountTendered = '';
 
     /** Accounts module on: the cash / bank / MFS account the money went into. */
@@ -122,15 +129,7 @@ class PosScreen extends Component
     /** Cash → a cash account, Card / Bank → a bank account, bKash / Nagad / Rocket → the MFS account named after it (else any MFS). */
     protected function defaultAccountFor(string $method): string
     {
-        $subtype = match ($method) {
-            'cash'  => 'cash',
-            'bank'  => 'bank',
-            default => 'mobile_banking',
-        };
-        $accounts = collect($this->cashAccounts())->where('subtype', $subtype);
-        $pick = $accounts->first(fn ($a) => str_contains(strtolower($a['name']), $method)) ?? $accounts->first();
-
-        return (string) ($pick['id'] ?? '');
+        return (string) (PaymentMethod::tryFrom($method)?->pickAccount($this->cashAccounts()) ?? '');
     }
 
     /** The one shared customer a no-name POS sale is booked against. */
@@ -532,7 +531,7 @@ class PosScreen extends Component
             'items.*.quantity'   => 'required|numeric|min:0.001',
             'items.*.unit_price' => 'required|numeric|min:0',
             'discountAmount'     => ['nullable', 'numeric', 'min:0', 'max:' . $this->itemsSubtotal],
-            'paymentMethod'      => ['required', Rule::in(array_keys(self::PAYMENT_METHODS))],
+            'paymentMethod'      => ['required', Rule::in(array_keys(self::paymentMethods()))],
             'paymentAccountId'   => $this->accountsOn() ? ['required', Rule::in(array_column($this->cashAccounts(), 'id'))] : ['nullable'],
             'amountTendered'     => 'required|numeric|min:0',
         ] + ($this->isDelivery() ? [
@@ -721,7 +720,7 @@ class PosScreen extends Component
                     'created_by'  => auth()->id(),
                 ]);
 
-                if ($this->paymentMethod === 'cash' && $paid > 0) {
+                if ($this->paymentMethod === PaymentMethod::CASH->value && $paid > 0) {
                     $this->session->cashMovements()->create([
                         'type'       => 'cash_in',
                         'amount'     => $paid,
@@ -751,8 +750,8 @@ class PosScreen extends Component
 
         $this->reset(['items', 'customerId', 'couponCode', 'shippingDiscount', 'couponError', 'discountAmount', 'amountTendered', 'productSearch', 'heldWarning', 'sellHeldStock',
             'fulfilment', 'shippingAddressId', 'newAddress', 'shippingMethodId', 'deliveryCharge']);
-        $this->paymentMethod = 'cash';
-        $this->paymentAccountId = $this->defaultAccountFor('cash');
+        $this->paymentMethod = PaymentMethod::CASH->value;
+        $this->paymentAccountId = $this->defaultAccountFor(PaymentMethod::CASH->value);
     }
 
     /**

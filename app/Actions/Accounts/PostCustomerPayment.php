@@ -3,6 +3,7 @@
 namespace App\Actions\Accounts;
 
 use App\Enums\Accounts\TransactionType;
+use App\Enums\PaymentMethod;
 use App\Models\AccountsCustomerInvoice;
 use App\Models\AccountsPaymentAllocation;
 use App\Models\Customer;
@@ -31,12 +32,16 @@ class PostCustomerPayment
         string $entryDate,
         array $allocations = [],
         ?string $description = null,
+        ?PaymentMethod $paymentMethod = null,
+        ?string $paymentReference = null,
     ): JournalEntry {
-        return DB::transaction(function () use ($customer, $cashAccountId, $receivableAccountId, $amount, $entryDate, $allocations, $description) {
+        return DB::transaction(function () use ($customer, $cashAccountId, $receivableAccountId, $amount, $entryDate, $allocations, $description, $paymentMethod, $paymentReference) {
             $paymentEntry = $this->postJournalEntry->handle([
-                'entry_date'       => $entryDate,
-                'description'      => $description ?? "Payment received from {$customer->full_name}",
-                'transaction_type' => TransactionType::PAYMENT_RECEIPT->value,
+                'entry_date'        => $entryDate,
+                'description'       => $description ?? "Payment received from {$customer->full_name}",
+                'transaction_type'  => TransactionType::PAYMENT_RECEIPT->value,
+                'payment_method'    => $paymentMethod?->value,
+                'payment_reference' => $paymentReference ?: null,
             ], [
                 ['account_id' => $cashAccountId, 'debit' => $amount],
                 [

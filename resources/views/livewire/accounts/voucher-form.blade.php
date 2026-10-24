@@ -84,6 +84,10 @@
             </div>
             <div class="text-[12px] text-[#6b7280]">Party দিতে প্রথমে উপরে কোনো profile বেছে নিন, অথবা receipt/payment form থেকে আসুন।</div>
         @else
+            @if (in_array($type, ['receipt', 'payment', 'expense'], true))
+                <x-payment-method-field method="f.method" reference="f.reference" :value="$f['method'] ?? null"
+                    :label="$type === 'receipt' ? 'Received by' : 'Paid by'" :input-class="$input" label-class="mb-[6px] block {{ $lbl }}" class="!gap-[12px]" />
+            @endif
             <div class="grid grid-cols-1 gap-[12px] sm:grid-cols-2">
                 @if ($type === 'contra')
                     <div class="flex flex-col gap-[6px]"><label for="vf-from" class="{{ $lbl }}">From</label>

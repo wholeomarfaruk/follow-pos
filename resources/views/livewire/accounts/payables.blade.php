@@ -182,6 +182,8 @@
         @php $pr = $this->all->firstWhere('key', $payKey); @endphp
         <x-accounts.modal :title="'Pay · ' . ($pr['payee'] ?? '')" close="$set('payKey', null)">
             <div class="text-[13px] text-[#374151]">{{ $pr['for'] ?? '' }} · due {{ isset($pr) ? $pr['due']->format('d M Y') : '' }} · {{ $money($pr['amount'] ?? 0) }}</div>
+            <x-payment-method-field method="pay.method" reference="pay.reference" :value="$pay['method'] ?? null"
+                :input-class="$input" label-class="mb-[6px] block text-[13px] font-semibold" class="!gap-[12px]" />
             <div class="grid grid-cols-1 gap-[12px] sm:grid-cols-2">
                 <div class="flex flex-col gap-[6px] sm:col-span-2"><label class="text-[13px] font-semibold">Pay from</label>
                     <select wire:model="pay.account_id" class="{{ $input }}">@foreach ($this->cashAccounts as $a)<option value="{{ $a['id'] }}">{{ $a['name'] }} · {{ $money($a['balance']) }}</option>@endforeach</select>@error('pay.account_id')<span class="{{ $err }}">{{ $message }}</span>@enderror</div>

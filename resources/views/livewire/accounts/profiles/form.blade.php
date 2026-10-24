@@ -170,7 +170,7 @@
                     <div class="flex flex-col gap-[6px]"><label for="e-join" class="{{ $lbl }}">Joining date</label><input id="e-join" type="text" readonly placeholder="YYYY-MM-DD" wire:model="employee.joined_on" class="flatpickr-only-date cursor-pointer bg-white {{ $roleIn }} py-[8px]"></div>
                     <div class="flex flex-col gap-[6px]"><label for="e-sal" class="{{ $lbl }}">Monthly salary (৳)</label><input id="e-sal" type="number" min="0" wire:model="employee.salary" placeholder="16000" class="{{ $roleIn }}"></div>
                     <div class="flex flex-col gap-[6px]"><label for="e-pay" class="{{ $lbl }}">Salary paid via</label>
-                        <select id="e-pay" wire:model="employee.pay_via" class="{{ $roleSel }}"><option value="cash">Cash</option><option value="bkash">bKash</option><option value="nagad">Nagad</option><option value="bank">Bank</option></select></div>
+                        <select id="e-pay" wire:model="employee.pay_via" class="{{ $roleSel }}">@foreach (\App\Enums\PaymentMethod::options() as $pmValue => $pmLabel)<option value="{{ $pmValue }}">{{ $pmLabel }}</option>@endforeach</select></div>
                     <div class="flex flex-col gap-[6px]"><label for="e-acc" class="{{ $lbl }}">bKash / bank no.</label><input id="e-acc" type="text" wire:model="employee.pay_account" placeholder="optional" class="{{ $roleIn }}"></div>
                 </div>
                 @if ($profile?->user)

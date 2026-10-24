@@ -5,6 +5,7 @@ namespace App\Livewire\Accounts\Profiles;
 use App\Actions\Profiles\PartyRecords;
 use App\Actions\Profiles\ProfileVouchers;
 use App\Enums\Accounts\TransactionType;
+use App\Enums\PaymentMethod;
 use App\Exceptions\Accounts\DuplicateJournalEntryException;
 use App\Exceptions\Accounts\LockedFiscalPeriodException;
 use App\Models\City;
@@ -20,6 +21,7 @@ use App\Services\UserService;
 use App\Support\BdPhone;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Arr;
+use Illuminate\Validation\Rule;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
@@ -248,7 +250,7 @@ class ProfileForm extends Component
                 'employee.department'  => 'nullable|string|max:60',
                 'employee.joined_on'   => 'nullable|date',
                 'employee.salary'      => 'nullable|numeric|min:0',
-                'employee.pay_via'     => 'required|in:cash,bkash,nagad,bank',
+                'employee.pay_via'     => ['required', Rule::in(PaymentMethod::values(PaymentMethod::manual()))],
                 'employee.pay_account' => 'nullable|string|max:60',
             ];
             if ($this->employee['give_login'] && ! $this->profile?->user()->exists()) {

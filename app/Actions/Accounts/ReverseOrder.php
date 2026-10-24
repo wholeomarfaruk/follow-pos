@@ -3,8 +3,8 @@
 namespace App\Actions\Accounts;
 
 use App\Enums\Accounts\TransactionType;
+use App\Enums\PaymentMethod;
 use App\Enums\Sales\OrderPaymentType;
-use App\Enums\Sales\PaymentMethod;
 use App\Models\Account;
 use App\Models\AccountsCustomerAdvance;
 use App\Models\AccountsCustomerInvoice;

@@ -99,6 +99,9 @@
                                         <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-50 text-amber-600">Adjusted</span>
                                     @endif
                                 </div>
+                                @if($invoice->payment_method)
+                                    <span class="block mt-0.5 text-[11px] text-gray-400">{{ $invoice->payment_method->label() }}{{ $invoice->payment_reference ? ' · ' . $invoice->payment_reference : '' }}</span>
+                                @endif
                             </td>
                             <td class="px-5 py-3">
                                 <div class="flex items-center gap-1.5">
