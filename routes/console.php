@@ -157,3 +157,26 @@ Artisan::command('accounts:post-orders', function () {
 })->purpose('Auto-post delivered / returned orders to the Accounts Panel')
     ->hourlyAt(15)
     ->withoutOverlapping();
+
+// Notification Hub: release quiet-hour / scheduled dispatches, start due
+// campaigns and send one batch of the outbox (campaigns go out a batch a
+// minute, which also keeps SMS gateways from being flooded).
+Artisan::command('notifications:flush', function () {
+    $r = app(\App\NotificationHub\NotificationHub::class)->flush();
+    if ($r['released'] || $r['delivered']) {
+        $this->info("Notifications: {$r['released']} released, {$r['delivered']} delivered.");
+    }
+})->purpose('Deliver queued and scheduled Notification Hub messages')
+    ->everyMinute()
+    ->withoutOverlapping(10);
+
+// Notification Hub: daily events (due reminders, promises, birthdays, low
+// stock, CRM follow-ups). Each rule runs once a day after its send time.
+Artisan::command('notifications:daily-scan {--force : Run every active rule now, ignoring send times}', function () {
+    $r = app(\App\NotificationHub\ScheduledNotifications::class)->run(null, (bool) $this->option('force'));
+    foreach ($r as $rule => $n) {
+        $this->line("{$rule}: {$n} dispatch(es)");
+    }
+})->purpose('Run the Notification Hub daily scans whose send time has come')
+    ->everyFifteenMinutes()
+    ->withoutOverlapping();

@@ -9,6 +9,7 @@ use App\Enums\Sales\OrderPaymentType;
 use App\Enums\Sales\OrderSource;
 use App\Enums\Sales\OrderStatus;
 use App\Enums\Sales\PaymentStatus;
+use App\NotificationHub\Triggers\OrderNotifications;
 use App\Support\PhoneNumber;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -17,6 +18,8 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
+
+use function Illuminate\Support\defer;
 
 class Order extends Model
 {
@@ -72,6 +75,19 @@ class Order extends Model
             if ($order->wasChanged('status') && $order->status === OrderStatus::PROCESSING) {
                 DB::afterCommit(fn () => app(SendOrderProcessingSms::class)->handle($order));
             }
+
+            // Notification Hub: order.delivered / order.cancelled.
+            if ($order->wasChanged('status') && in_array($order->status, [OrderStatus::DELIVERED, OrderStatus::CANCELLED], true)) {
+                DB::afterCommit(fn () => app(OrderNotifications::class)->statusChanged($order));
+            }
+        });
+
+        // Notification Hub: order.placed / order.big. Deferred past the response
+        // (or the end of the job / command) as well as the commit, because
+        // items and totals are written after the order row on every path.
+        static::created(function (Order $order) {
+            $id = $order->id;
+            DB::afterCommit(fn () => defer(fn () => app(OrderNotifications::class)->placed(Order::find($id))));
         });
     }
 

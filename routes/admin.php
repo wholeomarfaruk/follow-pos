@@ -147,6 +147,24 @@ Route::prefix('customers')->name('customers.')->group(function () {
     Route::get('/reviews/{id}', App\Livewire\Admin\Customers\Reviews\ReviewDetail::class)->name('reviews.show');
 });
 
+// CRM — leads pipeline → customers (.scratch/notifications-crm/spec.md)
+Route::prefix('crm')->name('crm.')->group(function () {
+    Route::get('/', App\Livewire\Admin\Crm\Dashboard::class)->name('dashboard');
+    Route::get('/leads', App\Livewire\Admin\Crm\Leads::class)->name('leads');
+    Route::get('/leads/{lead}', App\Livewire\Admin\Crm\LeadShow::class)->whereNumber('lead')->name('leads.show');
+    Route::get('/follow-ups', App\Livewire\Admin\Crm\FollowUps::class)->name('followups');
+    Route::get('/settings', App\Livewire\Admin\Crm\Settings::class)->name('settings');
+});
+
+// Notification Center — business notifications to every party (SMS, email, push, in-app)
+Route::prefix('notification-center')->name('notification-center.')->group(function () {
+    Route::get('/', App\Livewire\Admin\NotificationCenter\Overview::class)->name('overview');
+    Route::get('/rules', App\Livewire\Admin\NotificationCenter\Rules::class)->name('rules');
+    Route::get('/campaigns', App\Livewire\Admin\NotificationCenter\Campaigns::class)->name('campaigns');
+    Route::get('/outbox', App\Livewire\Admin\NotificationCenter\Outbox::class)->name('outbox');
+    Route::get('/settings', App\Livewire\Admin\NotificationCenter\Settings::class)->name('settings');
+});
+
 // Sales
 Route::prefix('sales')->name('sales.')->group(function () {
     Route::get('/orders', App\Livewire\Admin\Sales\Orders::class)->name('orders');

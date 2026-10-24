@@ -473,6 +473,114 @@
                 </div>
                 @endif
 
+                {{-- CRM: leads pipeline → customers --}}
+                @if ($canSee('crm.view', 'crm.manage'))
+                @php
+                    $crmActive = str_starts_with(Route::currentRouteName(), 'admin.crm.');
+                @endphp
+                <div x-data="dropdown" x-init="open = {{ $crmActive ? 'true' : 'false' }} && $store.sidebar.full" class="relative">
+                    <div @click="toggle('crm')" x-data="tooltip" @mouseover="show = true"
+                        @mouseleave="show = false"
+                        class="flex justify-between text-gray-400 hover:text-gray-200 hover:bg-gray-800 items-center space-x-2 rounded-md p-2 cursor-pointer
+                        {{ $crmActive ? 'text-gray-200 bg-gray-800' : '' }}"
+                        :class="{
+                            'justify-start': $store.sidebar.full,
+                            'sm:justify-center': !$store.sidebar.full
+                        }">
+                        <div class="relative flex items-center gap-2">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3v11.25A2.25 2.25 0 0 0 6 16.5h2.25M3.75 3h-1.5m1.5 0h16.5m0 0h1.5m-1.5 0v11.25A2.25 2.25 0 0 1 18 16.5h-2.25m-7.5 0h7.5m-7.5 0-1 3m8.5-3 1 3m0 0 .5 1.5m-.5-1.5h-9.5m0 0-.5 1.5M9 11.25v1.5M12 9v3.75m3-6v6" />
+                            </svg>
+                            <h1 x-cloak :class="!$store.sidebar.full ? (show ? visibleClass : 'sm:hidden') : ''">
+                                CRM
+                            </h1>
+                        </div>
+                        <svg x-cloak :class="$store.sidebar.full ? '' : 'sm:hidden'" xmlns="http://www.w3.org/2000/svg"
+                            class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd"
+                                d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z"
+                                clip-rule="evenodd" />
+                        </svg>
+                    </div>
+                    <div x-cloak x-show="open"
+                        :class="$store.sidebar.full ? expandedClass : shrinkedClass" class="text-gray-400 space-y-3">
+                        <a href="{{ route('admin.crm.dashboard') }}"
+                            class="block hover:text-gray-200 cursor-pointer {{ Route::currentRouteName() === 'admin.crm.dashboard' ? 'text-gray-200' : '' }}">
+                            Dashboard
+                        </a>
+                        <a href="{{ route('admin.crm.leads') }}"
+                            class="block hover:text-gray-200 cursor-pointer {{ str_starts_with(Route::currentRouteName(), 'admin.crm.leads') ? 'text-gray-200' : '' }}">
+                            Leads
+                        </a>
+                        <a href="{{ route('admin.crm.followups') }}"
+                            class="block hover:text-gray-200 cursor-pointer {{ Route::currentRouteName() === 'admin.crm.followups' ? 'text-gray-200' : '' }}">
+                            Follow-ups
+                        </a>
+                        @if ($canSee('crm_settings.manage'))
+                        <a href="{{ route('admin.crm.settings') }}"
+                            class="block hover:text-gray-200 cursor-pointer {{ Route::currentRouteName() === 'admin.crm.settings' ? 'text-gray-200' : '' }}">
+                            Settings
+                        </a>
+                        @endif
+                    </div>
+                </div>
+                @endif
+
+                {{-- Notification Center: SMS / email / push / in-app to customers, suppliers, staff, owners, leads --}}
+                @if ($canSee('notification_center.view'))
+                @php
+                    $notifyActive = str_starts_with(Route::currentRouteName(), 'admin.notification-center.');
+                @endphp
+                <div x-data="dropdown" x-init="open = {{ $notifyActive ? 'true' : 'false' }} && $store.sidebar.full" class="relative">
+                    <div @click="toggle('notification-center')" x-data="tooltip" @mouseover="show = true"
+                        @mouseleave="show = false"
+                        class="flex justify-between text-gray-400 hover:text-gray-200 hover:bg-gray-800 items-center space-x-2 rounded-md p-2 cursor-pointer
+                        {{ $notifyActive ? 'text-gray-200 bg-gray-800' : '' }}"
+                        :class="{
+                            'justify-start': $store.sidebar.full,
+                            'sm:justify-center': !$store.sidebar.full
+                        }">
+                        <div class="relative flex items-center gap-2">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M10.34 15.84c-.688-.06-1.386-.09-2.09-.09H7.5a4.5 4.5 0 1 1 0-9h.75c.704 0 1.402-.03 2.09-.09m0 9.18c.253.962.584 1.892.985 2.783.247.55.06 1.21-.463 1.511l-.657.38c-.551.318-1.26.117-1.527-.461a20.845 20.845 0 0 1-1.44-4.282m3.102.069a18.03 18.03 0 0 1-.59-4.59c0-1.586.205-3.124.59-4.59m0 9.18a23.848 23.848 0 0 1 8.835 2.535M10.34 6.66a23.847 23.847 0 0 0 8.835-2.535m0 0A23.74 23.74 0 0 0 18.795 3m.38 1.125a23.91 23.91 0 0 1 1.014 5.395m-1.014 8.855c-.118.38-.245.754-.38 1.125m.38-1.125a23.91 23.91 0 0 0 1.014-5.395m0-3.46c.495.413.811 1.035.811 1.73 0 .695-.316 1.317-.811 1.73m0-3.46a24.347 24.347 0 0 1 0 3.46" />
+                            </svg>
+                            <h1 x-cloak :class="!$store.sidebar.full ? (show ? visibleClass : 'sm:hidden') : ''">
+                                Notifications
+                            </h1>
+                        </div>
+                        <svg x-cloak :class="$store.sidebar.full ? '' : 'sm:hidden'" xmlns="http://www.w3.org/2000/svg"
+                            class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd"
+                                d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z"
+                                clip-rule="evenodd" />
+                        </svg>
+                    </div>
+                    <div x-cloak x-show="open"
+                        :class="$store.sidebar.full ? expandedClass : shrinkedClass" class="text-gray-400 space-y-3">
+                        <a href="{{ route('admin.notification-center.overview') }}"
+                            class="block hover:text-gray-200 cursor-pointer {{ Route::currentRouteName() === 'admin.notification-center.overview' ? 'text-gray-200' : '' }}">
+                            Overview
+                        </a>
+                        <a href="{{ route('admin.notification-center.rules') }}"
+                            class="block hover:text-gray-200 cursor-pointer {{ Route::currentRouteName() === 'admin.notification-center.rules' ? 'text-gray-200' : '' }}">
+                            Rules
+                        </a>
+                        <a href="{{ route('admin.notification-center.campaigns') }}"
+                            class="block hover:text-gray-200 cursor-pointer {{ Route::currentRouteName() === 'admin.notification-center.campaigns' ? 'text-gray-200' : '' }}">
+                            Campaigns
+                        </a>
+                        <a href="{{ route('admin.notification-center.outbox') }}"
+                            class="block hover:text-gray-200 cursor-pointer {{ Route::currentRouteName() === 'admin.notification-center.outbox' ? 'text-gray-200' : '' }}">
+                            Outbox
+                        </a>
+                        <a href="{{ route('admin.notification-center.settings') }}"
+                            class="block hover:text-gray-200 cursor-pointer {{ Route::currentRouteName() === 'admin.notification-center.settings' ? 'text-gray-200' : '' }}">
+                            Settings
+                        </a>
+                    </div>
+                </div>
+                @endif
+
                 {{-- Old admin Accounts menu — hidden; Accounts now opens the Accounts Panel from Quick Access.
                 @if (\App\Models\Setting::get('accounts_enabled', false, 'modules'))
                 @if ($canSee('accounts_cash_account.view', 'accounts_dashboard.view', 'accounts_expense.view', 'accounts_fixed_asset.view', 'accounts_loan.view', 'accounts_owner_equity.manage', 'accounts_payable.view', 'accounts_receivable.view', 'accounts_report.view', 'accounts_transaction.view', 'opening_balance.manage'))

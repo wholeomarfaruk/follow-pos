@@ -20,6 +20,7 @@ use App\Models\JournalEntry;
 use App\Models\MasterProfile;
 use App\Models\Supplier;
 use App\Models\SupplierInvoice;
+use App\NotificationHub\Triggers\AccountsNotifications;
 use App\Services\Accounts\Vouchers;
 use App\Services\Profiles\LedgerAccounts;
 use App\Services\Profiles\ProfileBalances;
@@ -57,6 +58,7 @@ class ProfileVouchers
 
             $this->plans->applyPayment($profile, 'customer', $amount, $entry->id);
             $profile->logActivity('receipt', 'Payment received ' . Bdt::money($amount), ['entry_id' => $entry->id]);
+            app(AccountsNotifications::class)->paymentReceived($profile, $amount, $entry, $date);
 
             return $entry;
         });
@@ -76,6 +78,7 @@ class ProfileVouchers
 
             $this->plans->applyPayment($profile, 'supplier', $amount, $entry->id);
             $profile->logActivity('payment', 'Payment made ' . Bdt::money($amount), ['entry_id' => $entry->id]);
+            app(AccountsNotifications::class)->paymentSent($profile, $amount, $entry, $date);
 
             return $entry;
         });

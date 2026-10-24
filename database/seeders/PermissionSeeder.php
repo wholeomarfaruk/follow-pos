@@ -319,6 +319,13 @@ class PermissionSeeder extends Seeder
                 ['name' => $permission['name'] ?? null]
             );
         }
+
+        // Newer permissions go by name: ids above 201 are taken by the
+        // auto-increment rows the Accounts Panel permissions migration makes.
+        // CRM + Notification Center (also created by a migration for live sites).
+        foreach (['crm.view', 'crm.manage', 'crm_settings.manage', 'notification_center.view', 'notification_center.manage', 'notification_campaign.manage'] as $name) {
+            Permission::findOrCreate($name, 'web');
+        }
       
     }
 }

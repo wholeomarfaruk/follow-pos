@@ -10,6 +10,7 @@ use App\Models\JournalEntry;
 use App\Models\MasterProfile;
 use App\Models\PayrollItem;
 use App\Models\PayrollRun;
+use App\NotificationHub\Triggers\AccountsNotifications;
 use App\Services\Profiles\LedgerAccounts;
 use App\Support\Bdt;
 use Carbon\CarbonInterface;
@@ -391,6 +392,7 @@ class Payroll
             }
 
             $employee->logActivity('salary', 'Salary paid ' . Bdt::money($amount), ['entry_id' => $entry->id]);
+            app(AccountsNotifications::class)->salaryPaid($employee, $amount, $entry, $date);
         });
     }
 

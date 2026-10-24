@@ -11,7 +11,14 @@ class Notifications extends Component
 
     public function markAsRead(string $id): void
     {
-        auth()->user()->notifications()->where('id', $id)->first()?->markAsRead();
+        $notification = auth()->user()->notifications()->where('id', $id)->first();
+        $notification?->markAsRead();
+
+        // Notification Hub alerts carry a link (the lead, the order…); open it.
+        $url = $notification?->data['url'] ?? null;
+        if (is_string($url) && str_starts_with($url, url('/'))) {
+            $this->redirect($url);
+        }
     }
 
     public function markAllAsRead(): void
