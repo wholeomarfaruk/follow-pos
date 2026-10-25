@@ -64,6 +64,7 @@
                     <option value="">All Activity</option>
                     <option value="active">Active now</option>
                     <option value="inactive">Offline</option>
+                    <option value="deleted">Deleted</option>
                 </select>
 
                 <span class="text-sm text-gray-400 sm:ml-auto whitespace-nowrap">
@@ -110,7 +111,7 @@
 
                     @if($filterActive)
                         <span class="inline-flex items-center gap-1 text-xs bg-emerald-100 text-emerald-700 rounded-full px-2.5 py-1">
-                            {{ $filterActive === 'active' ? 'Active now' : 'Offline' }}
+                            {{ ['active' => 'Active now', 'inactive' => 'Offline', 'deleted' => 'Deleted'][$filterActive] ?? $filterActive }}
                             <button wire:click="$set('filterActive', '')" class="text-emerald-400 hover:text-emerald-700 ml-0.5">&times;</button>
                         </span>
                     @endif
@@ -258,6 +259,11 @@
 
                             {{-- Actions --}}
                             <td class="sticky right-0 bg-white group-hover:bg-gray-50/60 px-5 py-3.5">
+                                @if($userItem->trashed())
+                                    @can('user.delete')
+                                        <x-restore-button action="restoreUser({{ $userItem->id }})" />
+                                    @endcan
+                                @else
                                 <div x-data="{
                                         open: false,
                                         top: 0,
@@ -347,6 +353,7 @@
                                         </div>
                                     </template>
                                 </div>
+                                @endif
                             </td>
                         </tr>
 

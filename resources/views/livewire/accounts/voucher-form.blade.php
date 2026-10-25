@@ -88,6 +88,11 @@
                 <x-payment-method-field method="f.method" reference="f.reference" :value="$f['method'] ?? null"
                     :label="$type === 'receipt' ? 'Received by' : 'Paid by'" :input-class="$input" label-class="mb-[6px] block {{ $lbl }}" class="!gap-[12px]" />
             @endif
+            @if ($chequeMode)
+                <div class="flex flex-col gap-[6px]"><label for="vf-bank" class="{{ $lbl }}">Bank</label><input id="vf-bank" type="text" maxlength="120" wire:model="f.bank" placeholder="যেমন: DBBL, Mirpur" class="{{ $input }}">
+                    @error('f.bank') <span class="text-[12px] text-[#b91c1c]">{{ $message }}</span> @enderror</div>
+                <div class="rounded-[9px] bg-[#eef2ff] px-[12px] py-[9px] text-[12.5px] text-[#3730a3]">Cheque-টা <a href="{{ route('accounts.cheques') }}" wire:navigate class="font-semibold underline">Cheques</a>-এ রাখা হবে। {{ $type === 'receipt' ? 'বাকি' : 'দেনা' }} কমবে cheque clear হলে — তখন voucher হবে।</div>
+            @endif
             <div class="grid grid-cols-1 gap-[12px] sm:grid-cols-2">
                 @if ($type === 'contra')
                     <div class="flex flex-col gap-[6px]"><label for="vf-from" class="{{ $lbl }}">From</label>
@@ -114,13 +119,13 @@
                 @if ($type === 'contra')
                     <div class="flex flex-col gap-[6px]"><label for="vf-charge" class="{{ $lbl }}">Charge (৳)</label><input id="vf-charge" type="number" min="0" step="0.01" wire:model="f.charge" placeholder="0" class="{{ $input }}"></div>
                 @endif
-                <div class="flex flex-col gap-[6px]"><label for="vf-date" class="{{ $lbl }}">Date</label><input id="vf-date" type="text" readonly placeholder="YYYY-MM-DD" wire:model="f.date" class="flatpickr-only-date cursor-pointer bg-white {{ $input }}"></div>
+                <div class="flex flex-col gap-[6px]"><label for="vf-date" class="{{ $lbl }}">{{ $chequeMode ? 'Cheque-এর তারিখ' : 'Date' }}</label><input id="vf-date" type="text" readonly placeholder="YYYY-MM-DD" wire:model="f.date" class="flatpickr-only-date cursor-pointer bg-white {{ $input }}"></div>
             </div>
         @endif
 
         <div class="flex flex-col gap-[6px]"><label for="vf-note" class="{{ $lbl }}">Note</label><input id="vf-note" type="text" wire:model="f.note" placeholder="যেমন: Office rent, October" class="{{ $input }}"></div>
 
-        <div x-data class="flex flex-col gap-[6px]">
+        <div x-data @class(['flex flex-col gap-[6px]', 'hidden' => $chequeMode])>
             <span class="{{ $lbl }}">Attachment</span>
             <div class="flex flex-wrap items-center gap-[8px]">
                 <input type="file" multiple x-ref="vf" wire:model="files" class="hidden" accept=".pdf,image/*,.xlsx,.csv">
@@ -134,8 +139,12 @@
 
         <x-slot:footer>
             <button type="button" wire:click="close" class="mr-auto rounded-[9px] border border-[#e5e7eb] bg-white px-[16px] py-[10px] text-[14px] text-[#374151]">Cancel</button>
-            <button type="button" wire:click="save(false)" wire:loading.attr="disabled" class="rounded-[9px] border border-[#c7d2fe] bg-white px-[16px] py-[10px] text-[14px] font-semibold text-[#3730a3]">Save as draft</button>
-            @if ($canPost)
+            @if ($chequeMode)
+                <button type="button" wire:click="save(false)" wire:loading.attr="disabled" class="rounded-[9px] border-0 bg-[#4f46e5] px-[20px] py-[10px] text-[14px] font-bold text-white">Save cheque</button>
+            @else
+                <button type="button" wire:click="save(false)" wire:loading.attr="disabled" class="rounded-[9px] border border-[#c7d2fe] bg-white px-[16px] py-[10px] text-[14px] font-semibold text-[#3730a3]">Save as draft</button>
+            @endif
+            @if ($canPost && ! $chequeMode)
                 <button type="button" wire:click="save(true)" wire:loading.attr="disabled" class="rounded-[9px] border-0 bg-[#4f46e5] px-[20px] py-[10px] text-[14px] font-bold text-white">Save &amp; post</button>
             @endif
         </x-slot:footer>

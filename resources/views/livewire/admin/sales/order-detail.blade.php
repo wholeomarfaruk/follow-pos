@@ -263,6 +263,15 @@
                                 @if($payment->transaction_id)
                                     <span class="text-xs text-gray-400 font-mono ml-2">{{ $payment->transaction_id }}</span>
                                 @endif
+                                @if($payment->cheque)
+                                    @php $cq = $payment->cheque; @endphp
+                                    <span class="block text-xs text-indigo-700 mt-0.5">
+                                        Cheque {{ $cq->bank_name ? $cq->bank_name . ' · ' : '' }}#{{ $cq->cheque_no }} · {{ \App\Models\Cheque::STATUSES[$cq->status] ?? $cq->status }} · {{ $cq->due_date->format('d M Y') }}
+                                        @if(auth()->user()->hasPanel('accounts'))
+                                            · <a href="{{ route('accounts.cheques', ['q' => $cq->cheque_no, 'view' => 'all']) }}" class="underline">Cheques</a>
+                                        @endif
+                                    </span>
+                                @endif
                                 <span class="block text-xs text-gray-400">{{ $payment->paid_at?->format('d M, Y H:i') ?? $payment->created_at->format('d M, Y H:i') }}</span>
                                 @if($payment->note)
                                     <span class="block text-xs text-gray-500 mt-0.5 whitespace-pre-line">{{ $payment->note }}</span>
@@ -277,14 +286,14 @@
                                 </span>
                                 @if($payment->type->value === 'payment')
                                     <div class="flex items-center justify-end gap-1.5 mt-1.5">
-                                        @if($payment->status->value !== 'paid')
+                                        @if($payment->status->value !== 'paid' && ! $payment->cheque)
                                             <button type="button" wire:click="confirmPayment({{ $payment->id }})" wire:loading.attr="disabled"
                                                 wire:confirm="Confirm this payment of {{ number_format($payment->amount, 2) }} as received?"
                                                 class="px-2 py-0.5 text-[11px] font-medium text-emerald-700 bg-emerald-50 rounded hover:bg-emerald-100 transition">Confirm</button>
                                         @endif
                                         <button type="button" wire:click="editPayment({{ $payment->id }})"
                                             class="px-2 py-0.5 text-[11px] font-medium text-indigo-600 bg-indigo-50 rounded hover:bg-indigo-100 transition">Edit</button>
-                                        @if(! in_array($payment->status->value, ['paid', 'failed']))
+                                        @if(! in_array($payment->status->value, ['paid', 'failed']) && ! $payment->cheque)
                                             <button type="button" wire:click="rejectPayment({{ $payment->id }})" wire:loading.attr="disabled"
                                                 wire:confirm="Reject this payment? It will be marked Failed."
                                                 class="px-2 py-0.5 text-[11px] font-medium text-red-600 bg-red-50 rounded hover:bg-red-100 transition">Reject</button>
@@ -640,6 +649,8 @@
                     <h2 class="text-base font-semibold text-gray-900">{{ $editingPaymentId ? 'Edit Payment' : 'Add Payment' }}</h2>
                     @if($editingPaidPayment)
                         <p class="text-xs text-gray-400 mt-0.5">Already paid — only the transaction ID and note can be changed.</p>
+                    @elseif($editingChequePayment)
+                        <p class="text-xs text-gray-400 mt-0.5">Cheque payment — clear / bounce / cancel Accounts › Cheques থেকে হবে; {{ $chequeEditable ? 'cheque clear হওয়ার আগে নম্বর, bank, তারিখ আর amount বদলানো যায়।' : 'এখানে শুধু note বদলানো যায়।' }}</p>
                     @endif
                 </div>
                 <button @click="open = false" type="button" class="w-8 h-8 flex items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 transition">
@@ -648,11 +659,15 @@
                     </svg>
                 </button>
             </div>
+            @php
+                $isCheque = $this->isChequePayment();
+                $chequeFields = $isCheque || ($editingChequePayment && $chequeEditable);
+            @endphp
             <form wire:submit.prevent="savePayment" class="px-6 py-5 space-y-4">
-                @unless($editingPaidPayment)
+                @unless($editingPaidPayment || $editingChequePayment)
                     <div>
                         <label class="block text-xs font-medium text-gray-600 mb-1.5">Payment Method <span class="text-red-500">*</span></label>
-                        <select wire:model="paymentMethod" class="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500">
+                        <select wire:model.live="paymentMethod" class="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500">
                             @foreach($paymentMethods as $pm)
                                 <option value="{{ $pm->value }}">{{ $pm->label() }}</option>
                             @endforeach
@@ -661,7 +676,7 @@
                     </div>
                     @if($accountsEnabled)
                         <div wire:key="payment-account-{{ $editingPaymentId ?? 'new' }}">
-                            <label class="block text-xs font-medium text-gray-600 mb-1.5">Received Into <span class="text-red-500">*</span></label>
+                            <label class="block text-xs font-medium text-gray-600 mb-1.5">{{ $isCheque ? 'যে account-এ জমা হবে' : 'Received Into' }} <span class="text-red-500">*</span></label>
                             <x-searchable-select field="paymentAccountId" :value="$paymentAccountId"
                                 :options="$cashAccounts->mapWithKeys(fn ($a) => [(string) $a->id => $a->code . ' — ' . $a->name])"
                                 placeholder="— Select cash/bank account —" search-placeholder="Search accounts…" />
@@ -669,27 +684,51 @@
                         </div>
                     @endif
                 @endunless
-                <div>
-                    <label class="block text-xs font-medium text-gray-600 mb-1.5">Transaction ID</label>
-                    <input wire:model="transactionId" type="text"
-                        class="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500">
-                    @error('transactionId') <p class="text-xs text-red-500 mt-1">{{ $message }}</p> @enderror
-                </div>
-                @unless($editingPaidPayment)
+                @unless($editingChequePayment && ! $chequeEditable)
+                    <div>
+                        <label class="block text-xs font-medium text-gray-600 mb-1.5">{{ $chequeFields ? 'Cheque no.' : 'Transaction ID' }} @if($chequeFields)<span class="text-red-500">*</span>@endif</label>
+                        <input wire:model="transactionId" type="text"
+                            class="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500">
+                        @error('transactionId') <p class="text-xs text-red-500 mt-1">{{ $message }}</p> @enderror
+                    </div>
+                @endunless
+                @if($chequeFields)
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-xs font-medium text-gray-600 mb-1.5">Bank</label>
+                            <input wire:model="chequeBank" type="text" maxlength="120" placeholder="যেমন: DBBL"
+                                class="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500">
+                            @error('chequeBank') <p class="text-xs text-red-500 mt-1">{{ $message }}</p> @enderror
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-gray-600 mb-1.5">Cheque date <span class="text-red-500">*</span></label>
+                            <input wire:model="chequeDate" type="date"
+                                class="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500">
+                            @error('chequeDate') <p class="text-xs text-red-500 mt-1">{{ $message }}</p> @enderror
+                        </div>
+                    </div>
+                @endif
+                @if(! $editingPaidPayment && (! $editingChequePayment || $chequeEditable))
                     <div>
                         <label class="block text-xs font-medium text-gray-600 mb-1.5">Amount</label>
                         <input wire:model="paymentAmount" type="number" step="0.01" min="0.01"
                             class="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500">
                         @error('paymentAmount') <p class="text-xs text-red-500 mt-1">{{ $message }}</p> @enderror
                     </div>
-                    <div>
-                        <label class="block text-xs font-medium text-gray-600 mb-1.5">Status</label>
-                        <select wire:model="paymentStatusNew" class="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500">
-                            @foreach($paymentStatuses as $ps)
-                                <option value="{{ $ps->value }}">{{ $ps->label() }}</option>
-                            @endforeach
-                        </select>
-                    </div>
+                @endif
+                @unless($editingPaidPayment || $editingChequePayment)
+                    @if($isCheque)
+                        <p class="text-xs text-indigo-700 bg-indigo-50 rounded-lg px-3 py-2">Payment <b>pending</b> থাকবে — cheque clear হলে (Accounts › Cheques) paid হবে, তখনই বাকি কমবে। তারিখের আগের দিন reminder যাবে।</p>
+                    @else
+                        <div>
+                            <label class="block text-xs font-medium text-gray-600 mb-1.5">Status</label>
+                            <select wire:model="paymentStatusNew" class="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500">
+                                @foreach($paymentStatuses as $ps)
+                                    <option value="{{ $ps->value }}">{{ $ps->label() }}</option>
+                                @endforeach
+                            </select>
+                        </div>
+                    @endif
                 @endunless
                 <div>
                     <label class="block text-xs font-medium text-gray-600 mb-1.5">Note</label>

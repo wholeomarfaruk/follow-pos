@@ -28,8 +28,10 @@ use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\OrderPayment;
 use App\Models\Setting;
+use App\Services\Accounts\Cheques;
 use App\Services\FraudShield\FraudShield;
 use App\Services\FraudShield\FraudShieldSettings;
+use App\Services\Profiles\LedgerAccounts;
 use App\Services\StockService;
 use Illuminate\Support\Facades\DB;
 use Livewire\Attributes\On;
@@ -62,6 +64,12 @@ class OrderDetail extends Component
     public string $paymentAmount   = '';
     public string $paymentStatusNew = 'paid';
     public string $paymentNote     = '';
+
+    // A cheque payment stays pending until the cheque clears (Accounts › Cheques).
+    public bool   $editingChequePayment = false;
+    public bool   $chequeEditable  = false;
+    public string $chequeBank      = '';
+    public string $chequeDate      = '';
 
     public bool   $refundModal        = false;
     public string $refundAmount       = '';
@@ -313,7 +321,8 @@ class OrderDetail extends Component
 
     public function openPaymentModal(): void
     {
-        $this->reset(['editingPaymentId', 'editingPaidPayment', 'paymentAccountId', 'transactionId', 'paymentAmount', 'paymentNote']);
+        $this->reset(['editingPaymentId', 'editingPaidPayment', 'editingChequePayment', 'chequeEditable', 'paymentAccountId', 'transactionId', 'paymentAmount', 'paymentNote', 'chequeBank']);
+        $this->chequeDate = today()->toDateString();
         $this->paymentMethod = PaymentMethod::CASH->value;
         $this->paymentStatusNew = 'paid';
         $this->resetValidation();
@@ -327,12 +336,23 @@ class OrderDetail extends Component
         $this->resetValidation();
         $this->editingPaymentId   = $payment->id;
         $this->editingPaidPayment = $payment->status === PaymentStatus::PAID;
+        $this->editingChequePayment = ! $this->editingPaidPayment && $payment->cheque()->exists();
         $this->paymentMethod      = $payment->payment_method?->value ?? PaymentMethod::CASH->value;
         $this->paymentAccountId   = $payment->cash_account_id ? (string) $payment->cash_account_id : '';
         $this->transactionId      = $payment->transaction_id ?? '';
         $this->paymentAmount      = (string) $payment->amount;
         $this->paymentStatusNew   = $payment->status->value;
         $this->paymentNote        = $payment->note ?? '';
+
+        // A cheque not cleared yet can still be corrected (number, bank, date, amount).
+        $cheque = $this->editingChequePayment ? $payment->cheque : null;
+        $this->chequeEditable = $cheque && ($cheque->isOpen() || $cheque->status === 'bounced');
+        if ($cheque) {
+            $this->transactionId = $cheque->cheque_no;
+            $this->chequeBank    = (string) $cheque->bank_name;
+            $this->chequeDate    = $cheque->cheque_date->toDateString();
+        }
+
         $this->paymentModal       = true;
     }
 
@@ -352,6 +372,46 @@ class OrderDetail extends Component
     public function savePayment(): void
     {
         $order = Order::findOrFail($this->orderId);
+
+        // A cheque payment waits for its cheque: its status moves from Accounts › Cheques;
+        // here the note — and, while the cheque isn't cleared, its details — can change.
+        if ($this->editingChequePayment) {
+            $payment = $this->findOrderPayment($this->editingPaymentId);
+
+            if ($this->chequeEditable && $payment->cheque) {
+                $this->validate([
+                    'transactionId' => 'required|string|max:60',
+                    'chequeBank'    => 'nullable|string|max:120',
+                    'chequeDate'    => 'required|date',
+                    'paymentAmount' => 'required|numeric|min:0.01',
+                    'paymentNote'   => 'nullable|string|max:1000',
+                ], [], ['transactionId' => 'cheque no.', 'chequeDate' => 'cheque date']);
+
+                try {
+                    app(Cheques::class)->amend($payment->cheque, [
+                        'cheque_no' => $this->transactionId, 'bank_name' => $this->chequeBank,
+                        'amount' => (float) $this->paymentAmount, 'cheque_date' => $this->chequeDate,
+                    ]);
+                } catch (\RuntimeException $e) {
+                    $this->addError('transactionId', $e->getMessage());
+                    return;
+                }
+            } else {
+                $this->validate(['paymentNote' => 'nullable|string|max:1000']);
+            }
+
+            $payment->update(['note' => $this->paymentNote ?: null]);
+            $this->logPaymentActivity($order, "Cheque payment updated for Order #{$order->id}");
+
+            $this->paymentModal = false;
+            $this->dispatch('toast', ['type' => 'success', 'message' => 'Payment updated']);
+            return;
+        }
+
+        if ($this->isChequePayment()) {
+            $this->saveChequePayment($order);
+            return;
+        }
 
         if ($this->editingPaidPayment) {
             $this->validate([
@@ -415,6 +475,82 @@ class OrderDetail extends Component
         $this->dispatch('toast', ['type' => 'success', 'message' => $this->editingPaymentId ? 'Payment updated' : 'Payment recorded']);
     }
 
+    /** A new payment by cheque is recorded pending and goes to Accounts › Cheques. */
+    public function isChequePayment(): bool
+    {
+        return ! $this->editingPaymentId && $this->paymentMethod === PaymentMethod::CHEQUE->value;
+    }
+
+    /**
+     * Cheque: the payment is saved pending (no money, no journal) with its
+     * cheque in the register; clearing the cheque marks it paid and posts it
+     * like any order payment.
+     */
+    protected function saveChequePayment(Order $order): void
+    {
+        $accountsOn = $this->accountsEnabled();
+
+        $this->validate([
+            'paymentAccountId' => ($accountsOn ? 'required' : 'nullable') . '|exists:accounts,id',
+            'transactionId'    => 'required|string|max:60',
+            'chequeBank'       => 'nullable|string|max:120',
+            'chequeDate'       => 'required|date',
+            'paymentAmount'    => 'required|numeric|min:0.01',
+            'paymentNote'      => 'nullable|string|max:1000',
+        ], [], ['transactionId' => 'cheque no.', 'chequeDate' => 'cheque date', 'paymentAccountId' => 'deposit account']);
+
+        $customer = $order->customer;
+
+        try {
+            $cheque = DB::transaction(function () use ($order, $customer, $accountsOn) {
+                $payment = $order->payments()->create([
+                    'type'            => OrderPaymentType::PAYMENT,
+                    'payment_method'  => PaymentMethod::CHEQUE->value,
+                    'cash_account_id' => $accountsOn && $this->paymentAccountId !== '' ? (int) $this->paymentAccountId : null,
+                    'transaction_id'  => $this->transactionId,
+                    'note'            => $this->paymentNote ?: null,
+                    'amount'          => $this->paymentAmount,
+                    'status'          => PaymentStatus::PENDING->value,
+                    'paid_at'         => null,
+                ]);
+
+                return app(Cheques::class)->create([
+                    'direction'        => 'received',
+                    'cheque_no'        => $this->transactionId,
+                    'bank_name'        => $this->chequeBank,
+                    'profile_id'       => $customer?->master_profile_id,
+                    'party_label'      => $customer?->full_name ?: "Order #{$order->id}",
+                    'amount'           => (float) $this->paymentAmount,
+                    'cheque_date'      => $this->chequeDate,
+                    'account_id'       => $this->paymentAccountId !== '' ? (int) $this->paymentAccountId : null,
+                    'ledger_id'        => app(LedgerAccounts::class)->id(LedgerAccounts::RECEIVABLE) ?: null,
+                    'order_payment_id' => $payment->id,
+                    'note'             => "Order #{$order->id}",
+                ]);
+            });
+        } catch (\RuntimeException $e) {
+            $this->addError('transactionId', $e->getMessage());
+            return;
+        }
+
+        $this->logPaymentActivity($order, "Cheque {$cheque->label()} of {$this->paymentAmount} received for Order #{$order->id} — pending until it clears");
+
+        $this->paymentModal = false;
+        $this->dispatch('toast', ['type' => 'success', 'message' => 'Cheque রাখা হলো — clear হলে payment paid হবে (Accounts › Cheques)।']);
+    }
+
+    /** Pending cheque payments are settled from Accounts › Cheques, not here. */
+    protected function guardChequePayment(OrderPayment $payment): bool
+    {
+        if (! $payment->cheque()->exists()) {
+            return false;
+        }
+
+        $this->dispatch('toast', ['type' => 'error', 'message' => 'এটা cheque payment — Accounts › Cheques থেকে clear / bounce / cancel করুন।']);
+
+        return true;
+    }
+
     /**
      * Confirms a pending payment (e.g. a bKash send-money the customer
      * submitted a transaction ID for at checkout). With the Accounts module
@@ -425,7 +561,7 @@ class OrderDetail extends Component
     {
         $payment = $this->findOrderPayment($paymentId);
 
-        if ($payment->status === PaymentStatus::PAID) {
+        if ($payment->status === PaymentStatus::PAID || $this->guardChequePayment($payment)) {
             return;
         }
 
@@ -450,7 +586,7 @@ class OrderDetail extends Component
     {
         $payment = $this->findOrderPayment($paymentId);
 
-        if ($payment->status === PaymentStatus::PAID) {
+        if ($payment->status === PaymentStatus::PAID || $this->guardChequePayment($payment)) {
             return;
         }
 
@@ -849,7 +985,7 @@ class OrderDetail extends Component
             'items.combo.items.product',
             'items.combo.items.variant',
             'items.batchAllocations.batch',
-            'payments',
+            'payments.cheque',
             'charges',
             'offers',
             'courierShipments.courier',

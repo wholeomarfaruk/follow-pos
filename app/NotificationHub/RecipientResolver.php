@@ -11,7 +11,7 @@ use Illuminate\Support\Collection;
 /**
  * Who a rule's audience is for one fire() call. The context carries the
  * parties of the moment (customer / supplier / employee / lead / assignee);
- * owners and staff are looked up.
+ * owners, staff and accountants are looked up.
  */
 class RecipientResolver
 {
@@ -29,10 +29,26 @@ class RecipientResolver
             'assignee' => collect([$context['assignee'] ?? ($context['lead'] ?? null)?->assignee]),
             'owner' => $this->owners(),
             'staff' => $this->staff($rule, $context),
+            'accountant' => $this->accountants(),
             default => collect(),
         };
 
         return $this->normalise($list);
+    }
+
+    /**
+     * Users who post or approve Accounts Panel vouchers (as for report
+     * delivery). Owners and superadmins are left out: they have audiences
+     * of their own.
+     *
+     * @return Collection<int, User>
+     */
+    public function accountants(): Collection
+    {
+        // permission() throws when the permissions aren't migrated yet.
+        return rescue(fn () => $this->active(User::permission(['accounts.post', 'accounts.approve']))->get()
+            ->reject(fn (User $u) => $u->hasAnyRole(['superadmin', 'owner']))
+            ->values(), collect(), false);
     }
 
     /** @return Collection<int, MasterProfile> */

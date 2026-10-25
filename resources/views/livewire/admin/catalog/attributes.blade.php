@@ -124,6 +124,27 @@
         </div>
     </div>
 
+    {{-- Removed attributes: bring one back with its values (adding the same slug again restores it too) --}}
+    @if($removedAttributes->isNotEmpty())
+        <div x-data="{ show: false }" class="mt-4">
+            <button @click="show = !show" type="button" class="text-xs font-medium text-gray-500 hover:text-gray-700">
+                Removed attributes ({{ $removedAttributes->count() }}) <span x-text="show ? '▲' : '▼'"></span>
+            </button>
+            <div x-show="show" x-cloak class="mt-2 bg-white rounded-2xl border border-gray-200 divide-y divide-gray-100">
+                @foreach($removedAttributes as $removed)
+                    <div wire:key="removed-attribute-{{ $removed->id }}" class="flex items-center gap-3 px-5 py-3">
+                        <div class="min-w-0 flex-1">
+                            <p class="text-sm text-gray-600">{{ $removed->name }}</p>
+                            <p class="text-xs font-mono text-gray-400">{{ $removed->slug }} · removed {{ $removed->deleted_at?->format('d M Y') }}</p>
+                        </div>
+                        <button wire:click="restoreAttribute({{ $removed->id }})" type="button"
+                            class="px-3 py-1.5 text-xs font-medium text-indigo-600 bg-indigo-50 rounded-lg hover:bg-indigo-100 transition">Restore</button>
+                    </div>
+                @endforeach
+            </div>
+        </div>
+    @endif
+
     {{-- Create Modal --}}
     <div x-cloak x-data="{ open: @entangle('createModal') }" x-show="open" x-transition
         class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" role="dialog">
@@ -376,6 +397,30 @@
                         </ul>
                     @endif
                 </div>
+
+                {{-- Removed values: bring one back (adding the same slug again restores it too) --}}
+                @if($removedValues->isNotEmpty())
+                    <div x-data="{ show: false }">
+                        <button @click="show = !show" type="button" class="text-xs font-medium text-gray-500 hover:text-gray-700">
+                            Removed values ({{ $removedValues->count() }}) <span x-text="show ? '▲' : '▼'"></span>
+                        </button>
+                        <ul x-show="show" x-cloak class="mt-2 border border-gray-200 rounded-lg divide-y divide-gray-100">
+                            @foreach($removedValues as $removed)
+                                <li wire:key="removed-value-{{ $removed->id }}" class="flex items-center gap-3 px-3 py-2 bg-gray-50">
+                                    @if($removed->swatch_type === 'color')
+                                        <span class="h-5 w-5 rounded-full border border-gray-200 shrink-0 opacity-60" style="background-color: {{ $removed->swatch_value }}"></span>
+                                    @endif
+                                    <div class="min-w-0 flex-1">
+                                        <p class="text-sm text-gray-500 truncate">{{ $removed->value }}</p>
+                                        <p class="text-xs font-mono text-gray-400">{{ $removed->slug }} · removed {{ $removed->deleted_at?->format('d M Y') }}</p>
+                                    </div>
+                                    <button wire:click="restoreValue({{ $removed->id }})" type="button"
+                                        class="px-2.5 py-1 text-xs font-medium text-indigo-600 bg-indigo-50 rounded-lg hover:bg-indigo-100 transition shrink-0">Restore</button>
+                                </li>
+                            @endforeach
+                        </ul>
+                    </div>
+                @endif
             </div>
 
             <div class="flex items-center justify-end gap-2 px-6 py-4 border-t border-gray-100 shrink-0">

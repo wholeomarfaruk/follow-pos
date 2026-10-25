@@ -85,7 +85,8 @@ class CustomerList extends Component
                 ->orWhere('phone', 'like', "%{$this->search}%")
                 ->orWhere('email', 'like', "%{$this->search}%")
             ))
-            ->when($this->filterStatus !== '', fn ($q) => $q->where('status', $this->filterStatus))
+            ->when($this->filterStatus === 'deleted', fn ($q) => $q->onlyTrashed())
+            ->when(! in_array($this->filterStatus, ['', 'deleted'], true), fn ($q) => $q->where('status', $this->filterStatus))
             ->when($this->filterCustomerGroup !== '', fn ($q) => $q->where('customer_group_id', $this->filterCustomerGroup))
             ->when($this->filterOnline === 'online', fn ($q) => $q->whereHas('devices', fn ($d) => $d->where('last_active_at', '>=', $onlineSince)))
             ->when($this->filterOnline === 'offline', fn ($q) => $q->whereDoesntHave('devices', fn ($d) => $d->where('last_active_at', '>=', $onlineSince)))
@@ -282,6 +283,22 @@ class CustomerList extends Component
         $customer->update(['status' => $newStatus]);
 
         $this->dispatch('toast', ['type' => 'success', 'message' => "{$customer->full_name} is now {$newStatus}"]);
+    }
+
+    /** Bring back a removed customer (the "Deleted" filter) — with its master profile if that was removed too. */
+    public function restoreCustomer(int $id): void
+    {
+        $customer = Customer::onlyTrashed()->findOrFail($id);
+        $customer->restore();
+        MasterProfile::onlyTrashed()->whereKey($customer->master_profile_id)->first()?->restore();
+
+        activity('customers')
+            ->causedBy(auth()->user())
+            ->performedOn($customer)
+            ->event('restored')
+            ->log("Customer \"{$customer->full_name}\" was restored");
+
+        $this->dispatch('toast', ['type' => 'success', 'message' => "{$customer->full_name} restored"]);
     }
 
     public function deleteCustomer(int $id): void

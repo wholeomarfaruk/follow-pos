@@ -16,6 +16,7 @@ Route::get('/cash-bank', App\Livewire\Accounts\CashBank::class)->name('cash-bank
 Route::get('/receivables', App\Livewire\Accounts\Receivables::class)->name('receivables');
 Route::get('/commission', App\Livewire\Accounts\Commission::class)->name('commission');
 Route::get('/payables', App\Livewire\Accounts\Payables::class)->name('payables');
+Route::get('/cheques', App\Livewire\Accounts\Cheques::class)->name('cheques');
 Route::get('/loans', App\Livewire\Accounts\LoansEmi::class)->name('loans');
 Route::get('/expenses', App\Livewire\Accounts\Expenses::class)->name('expenses');
 Route::get('/fixed-assets', App\Livewire\Accounts\FixedAssets::class)->name('fixed-assets');

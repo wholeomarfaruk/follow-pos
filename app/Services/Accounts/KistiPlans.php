@@ -148,6 +148,8 @@ class KistiPlans
     {
         $out = ['sms' => 0, 'fees' => 0, 'blocked' => 0];
         $sms = app(\App\Actions\Profiles\SendProfileSms::class);
+        // Notification Center › kisti.due (customer, SMS) sends these instead when it is on.
+        $hubSends = \App\NotificationHub\HubSettings::sendsSms('kisti.due', 'customer');
         $ar = $this->ledgers->id(LedgerAccounts::RECEIVABLE);
         $fee = $this->ledgers->id('4150');
 
@@ -164,6 +166,10 @@ class KistiPlans
             $left = round((float) $k->adjusted_amount - (float) $k->paid_amount, 2);
 
             if ($k->due_date->gte(today())) {
+                if ($hubSends) {
+                    continue;
+                }
+
                 // Day before: Settings › SMS "কিস্তির reminder" template; on the day: a fixed "today" line.
                 $text = $k->due_date->isToday()
                     ? "{$p->display_name}, আপনার কিস্তি {$k->no}/{$plan->count} " . Bdt::money($left) . ' আজ দেওয়ার কথা। — ' . \App\Support\AccountsSettings::businessName()

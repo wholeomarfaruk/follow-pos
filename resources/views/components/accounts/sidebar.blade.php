@@ -74,6 +74,7 @@
             ['receivables', 'accounts.receivables', 'Receivables (Due)', '<path d="M17 7 7 17"></path><path d="M7 8v9h9"></path>'],
             ['commission', 'accounts.commission', 'Commission', '<path d="M19 5 5 19"></path><circle cx="7" cy="7" r="2.5"></circle><circle cx="17" cy="17" r="2.5"></circle>'],
             ['payables', 'accounts.payables', 'Payables', '<path d="M7 17 17 7"></path><path d="M8 7h9v9"></path>'],
+            ['cheques', 'accounts.cheques', 'Cheques', '<rect x="2.5" y="6" width="19" height="12" rx="1.5"></rect><path d="M6 14h5"></path><path d="M14.5 14.5c1-1.5 2-1.5 3 0"></path><path d="M6 10h12"></path>'],
             ['loans', 'accounts.loans', 'Loans &amp; EMI', '<path d="M3 10 12 4l9 6"></path><path d="M5 10v8"></path><path d="M10 10v8"></path><path d="M14 10v8"></path><path d="M19 10v8"></path><path d="M3 20h18"></path>'],
             ['assets', 'accounts.fixed-assets', 'Fixed Assets', '<rect x="3" y="4" width="18" height="12" rx="1.5"></rect><path d="M8 20h8"></path><path d="M12 16v4"></path>'],
             ['expenses', 'accounts.expenses', 'Expenses', '<path d="M6 3h9l4 4v14H6z"></path><path d="M9 12h7"></path><path d="M9 16h7"></path>'],

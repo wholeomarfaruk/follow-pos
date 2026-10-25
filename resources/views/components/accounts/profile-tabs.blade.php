@@ -19,4 +19,19 @@
             ])>{{ number_format($t['count']) }}</span>
         </a>
     @endforeach
+
+    {{-- Removed profiles of this tab's role: Master Profiles › Status › Deleted, where each can be restored. --}}
+    @php
+        $deletedRole = ['customers' => 'Customer', 'suppliers' => 'Supplier', 'lenders' => 'Lender', 'owners' => 'Owner', 'employees' => 'Employee'][$active] ?? null;
+        $deletedCount = \App\Models\MasterProfile::onlyTrashed()
+            ->when($deletedRole, fn ($q) => $q->withRole(strtolower($deletedRole)))
+            ->count();
+    @endphp
+    @if ($deletedCount)
+        <a href="{{ route('accounts.profiles.index', array_filter(['status' => 'deleted', 'role' => $deletedRole])) }}" wire:navigate
+           class="ml-auto flex items-center gap-[6px] whitespace-nowrap px-[10px] pb-[13px] pt-[15px] text-[13px] font-medium no-underline !text-[#991b1b]">
+            মোছা profile
+            <span class="rounded-[10px] bg-[#fee2e2] px-[8px] py-[1px] text-[11.5px] font-bold text-[#991b1b]">{{ number_format($deletedCount) }}</span>
+        </a>
+    @endif
 </nav>

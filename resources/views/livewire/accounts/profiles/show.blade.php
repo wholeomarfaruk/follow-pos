@@ -322,6 +322,27 @@
                     <span class="text-[#6b7280]">Opening bal.</span><span>{{ $ob ? $money($ob->lines->sum('debit')) . ($ob->purpose === 'opening_receive' ? ' Dr' : ' Cr') . ' · ' . $ob->entry_date->format('d M Y') : '—' }}</span>
                 </div>
             </section>
+            @if ($this->cheques->isNotEmpty())
+                <section class="flex flex-col gap-[10px] rounded-[14px] border border-[#e5e7eb] bg-white px-[18px] py-[16px]">
+                    <div class="flex items-center justify-between gap-[8px]">
+                        <h2 class="m-0 text-[15px] font-bold">Cheques</h2>
+                        <a href="{{ route('accounts.cheques', ['q' => $p->display_name, 'view' => 'all']) }}" wire:navigate class="text-[12.5px]">সব দেখুন</a>
+                    </div>
+                    @foreach ($this->cheques as $cq)
+                        <div wire:key="pcq-{{ $cq->id }}" class="flex items-start justify-between gap-[8px] text-[13px]">
+                            <div class="min-w-0">
+                                <div class="font-semibold">{{ $cq->isReceived() ? 'পেলাম' : 'দিলাম' }} · #{{ $cq->cheque_no }}</div>
+                                <div class="text-[11.5px] text-[#6b7280]">{{ $cq->bank_name ?: 'Bank' }} · {{ $cq->due_date->format('d M Y') }}</div>
+                            </div>
+                            <div class="text-right">
+                                <div class="font-bold">{{ $money($cq->amount) }}</div>
+                                <span @class(['text-[11.5px] font-semibold', 'text-[#991b1b]' => $cq->status === 'bounced', 'text-[#92400e]' => $cq->status !== 'bounced'])>{{ \App\Models\Cheque::STATUSES[$cq->status] ?? $cq->status }}</span>
+                            </div>
+                        </div>
+                    @endforeach
+                    <div class="text-[11.5px] text-[#6b7280]">Clear না হওয়া cheque বাকি / দেনায় ধরা হয়নি।</div>
+                </section>
+            @endif
             <section class="flex flex-col gap-[12px] rounded-[14px] border border-[#e5e7eb] bg-white px-[18px] py-[16px]">
                 <h2 class="m-0 text-[15px] font-bold">Role settings</h2>
                 @foreach ($p->roles->sortBy(fn ($r) => array_search($r->role, \App\Models\MasterProfile::ROLES)) as $r)

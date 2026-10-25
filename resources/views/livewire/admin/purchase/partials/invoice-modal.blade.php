@@ -195,6 +195,9 @@
                         </label>
                         @if($markPaidNow)
                             <x-payment-method-field method="paymentMethod" reference="paymentReference" :value="$paymentMethod" class="mt-3" />
+                            @if($this->paysByCheque())
+                                @include('livewire.admin.purchase.partials.cheque-fields', ['class' => 'mt-3'])
+                            @endif
                             <div class="grid grid-cols-2 gap-4 mt-3">
                                 <div>
                                     <label class="block text-xs font-medium text-gray-600 mb-1.5">Amount Paid <span class="text-red-500">*</span></label>
@@ -223,6 +226,9 @@
                 </div>
 
                 <x-payment-method-field method="paymentMethod" reference="paymentReference" :value="$paymentMethod" />
+                @if($this->paysByCheque())
+                    @include('livewire.admin.purchase.partials.cheque-fields')
+                @endif
 
                 @unless($editingInvoiceId)
                     <div>
@@ -261,6 +267,9 @@
 
                 @if($invoiceType === 'advance')
                     <x-payment-method-field method="paymentMethod" reference="paymentReference" :value="$paymentMethod" />
+                    @if($this->paysByCheque())
+                        @include('livewire.admin.purchase.partials.cheque-fields')
+                    @endif
                 @endif
 
                 @if($invoiceType === 'advance' && ! $editingIsLocked)

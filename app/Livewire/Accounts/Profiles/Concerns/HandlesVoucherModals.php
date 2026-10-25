@@ -10,6 +10,7 @@ use App\Models\JournalEntry;
 use App\Models\Loan;
 use App\Models\MasterProfile;
 use App\Models\SupplierInvoice;
+use App\Services\Accounts\Cheques;
 use App\Services\Profiles\LedgerAccounts;
 use App\Services\Profiles\ProfileBalances;
 use App\Services\Profiles\ProfileCounts;
@@ -77,6 +78,7 @@ trait HandlesVoucherModals
             'account_id' => $this->defaultCashAccount(),
             'method'     => PaymentMethod::forAccount(collect($this->cashAccounts)->firstWhere('id', $this->defaultCashAccount()))->value,
             'reference'  => '',
+            'bank'       => '',
             'date'       => today()->toDateString(),
             'note'       => '',
         ];
@@ -91,6 +93,13 @@ trait HandlesVoucherModals
     public function closeVoucher(): void
     {
         $this->voucherType = null;
+    }
+
+    /** Collect / Pay / supplier advance by cheque goes to Accounts › Cheques: nothing is booked until it clears. */
+    public function voucherIsCheque(): bool
+    {
+        return in_array($this->voucherType, ['collect', 'pay', 'supplier_advance'], true)
+            && ($this->voucher['method'] ?? null) === PaymentMethod::CHEQUE->value;
     }
 
     public function pickVoucherProfile(int $id): void
@@ -168,7 +177,8 @@ trait HandlesVoucherModals
             'voucher.amount'     => 'required|numeric|min:1',
             'voucher.account_id' => 'required|integer|exists:accounts,id',
             'voucher.method'     => ['required', Rule::in(PaymentMethod::values(PaymentMethod::manual()))],
-            'voucher.reference'  => 'nullable|string|max:100',
+            'voucher.reference'  => $this->voucherIsCheque() ? 'required|string|max:60' : 'nullable|string|max:100',
+            'voucher.bank'       => 'nullable|string|max:120',
             'voucher.date'       => 'required|date',
             'voucher.note'       => 'nullable|string|max:255',
             'voucher.monthly'    => $type === 'salary_advance' ? 'nullable|numeric|min:0' : 'nullable',
@@ -179,7 +189,7 @@ trait HandlesVoucherModals
             'voucher.account_id' => 'account',
             'voucher.method'     => 'payment method',
             'voucher.loan_id'    => 'loan',
-        ]);
+        ] + ($this->voucherIsCheque() ? ['voucher.reference' => 'cheque no.'] : []));
 
         $p = MasterProfile::with('roles')->findOrFail($this->voucher['profile_id']);
         $v = $this->voucher;
@@ -196,6 +206,13 @@ trait HandlesVoucherModals
 
             return;
         }
+
+        if ($this->voucherIsCheque()) {
+            $this->saveVoucherCheque($p, $v);
+
+            return;
+        }
+
         $amount = round((float) $v['amount'], 2);
         $vouchers = app(ProfileVouchers::class);
 
@@ -236,6 +253,43 @@ trait HandlesVoucherModals
         ProfileCounts::flush();
         unset($this->voucherProfile);
         $this->dispatch('toast', type: 'success', message: $message);
+    }
+
+    protected function saveVoucherCheque(MasterProfile $p, array $v): void
+    {
+        $collect = $this->voucherType === 'collect';
+        $advance = $this->voucherType === 'supplier_advance';
+        $ledger = match (true) {
+            $collect => LedgerAccounts::RECEIVABLE,
+            $advance => LedgerAccounts::SUPPLIER_ADVANCE,
+            default => LedgerAccounts::PAYABLE,
+        };
+
+        try {
+            $cheque = app(Cheques::class)->create([
+                'direction'   => $collect ? 'received' : 'issued',
+                'cheque_no'   => $v['reference'],
+                'bank_name'   => $v['bank'] ?? null,
+                'profile_id'  => $p->id,
+                'amount'      => round((float) $v['amount'], 2),
+                'cheque_date' => $v['date'],
+                'account_id'  => (int) $v['account_id'],
+                'ledger_id'   => app(LedgerAccounts::class)->require($ledger),
+                'note'        => $v['note'] ?: null,
+                'meta'        => $advance ? ['kind' => 'supplier_advance'] : null,
+            ]);
+        } catch (RuntimeException $e) {
+            $this->addError('voucher.reference', $e->getMessage());
+
+            return;
+        }
+
+        $this->voucherType = null;
+        $this->dispatch('toast', type: 'success', message: "Cheque {$cheque->label()} রাখা হলো — clear হলে " . match (true) {
+            $collect => 'বাকি কমবে।',
+            $advance => 'advance বসবে।',
+            default => 'দেনা কমবে।',
+        });
     }
 
     protected function done(mixed $result, string $message): string

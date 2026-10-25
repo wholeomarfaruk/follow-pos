@@ -186,6 +186,22 @@ class Suppliers extends Component
         $this->dispatch('toast', ['type' => 'success', 'message' => "{$supplier->name} is now {$newStatus}"]);
     }
 
+    /** Bring back a removed supplier (the "Deleted" filter) — with its master profile if that was removed too. */
+    public function restoreSupplier(int $id): void
+    {
+        $supplier = Supplier::onlyTrashed()->findOrFail($id);
+        $supplier->restore();
+        MasterProfile::onlyTrashed()->whereKey($supplier->master_profile_id)->first()?->restore();
+
+        activity('purchase')
+            ->causedBy(auth()->user())
+            ->performedOn($supplier)
+            ->event('restored')
+            ->log("Supplier \"{$supplier->name}\" was restored");
+
+        $this->dispatch('toast', ['type' => 'success', 'message' => "{$supplier->name} restored"]);
+    }
+
     public function deleteSupplier(int $id): void
     {
         $supplier = Supplier::findOrFail($id);
@@ -217,7 +233,8 @@ class Suppliers extends Component
                 ->orWhere('company_name', 'like', "%{$this->search}%")
                 ->orWhere('phone', 'like', "%{$this->search}%")
             ))
-            ->when($this->filterStatus !== '', fn($q) => $q->where('status', $this->filterStatus))
+            ->when($this->filterStatus === 'deleted', fn($q) => $q->onlyTrashed())
+            ->when(! in_array($this->filterStatus, ['', 'deleted'], true), fn($q) => $q->where('status', $this->filterStatus))
             ->orderBy('name')
             ->paginate(15);
 

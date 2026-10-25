@@ -32,12 +32,13 @@ class NotificationCatalog
         'employee' => 'Employee',
         'owner' => 'Owners',
         'staff' => 'Staff',
+        'accountant' => 'Accountants',
         'lead' => 'Lead',
         'assignee' => 'Assigned staff',
     ];
 
     /** Audiences that are staff users (have a login, so push / in-app work). */
-    public const STAFF_AUDIENCES = ['staff', 'assignee'];
+    public const STAFF_AUDIENCES = ['staff', 'assignee', 'accountant'];
 
     /**
      * Categories decide quiet hours and opt-outs: transactional goes out at
@@ -175,7 +176,7 @@ class NotificationCatalog
                 'group' => 'Accounts',
                 'category' => 'reminder',
                 'trigger' => 'daily',
-                'description' => 'Customers who owe at least the amount below, repeated every N days. Skips anyone with an open promise to pay.',
+                'description' => 'Customers who owe at least the amount below, repeated every N days. Skips anyone with an open promise to pay or a cheque not cleared yet. Email goes only to customers who have one.',
                 'placeholders' => ['name', 'due', 'date', 'business', 'count', 'total', 'list'],
                 'conditions' => [
                     'min_amount' => ['label' => 'Remind when due is at least (Tk)', 'type' => 'number', 'default' => 500],
@@ -183,9 +184,10 @@ class NotificationCatalog
                 ],
                 'audiences' => [
                     'customer' => [
-                        'channels' => ['sms'],
+                        'channels' => ['sms', 'email'],
                         'send_time' => '11:00',
                         'sms' => 'প্রিয় {name}, {date} পর্যন্ত আপনার কাছে {due} টাকা বাকি আছে। অনুগ্রহ করে পরিশোধ করুন — {business}',
+                        'email_subject' => 'Payment reminder — {due} Tk due',
                     ],
                     'staff' => [
                         'active' => true,
@@ -205,9 +207,10 @@ class NotificationCatalog
                 'placeholders' => ['name', 'amount', 'date', 'business', 'count', 'list'],
                 'audiences' => [
                     'customer' => [
-                        'channels' => ['sms'],
+                        'channels' => ['sms', 'email'],
                         'send_time' => '10:00',
                         'sms' => 'প্রিয় {name}, {date} তারিখে {amount} টাকা পরিশোধের কথা ছিল। মনে করিয়ে দিচ্ছি — {business}',
+                        'email_subject' => 'Payment reminder — {amount} Tk on {date}',
                     ],
                     'staff' => [
                         'active' => true,
@@ -215,6 +218,227 @@ class NotificationCatalog
                         'send_time' => '09:30',
                         'push_title' => 'Promises & callbacks today',
                         'push' => '{count} due today: {list}',
+                    ],
+                ],
+            ],
+            'payable.due' => [
+                'label' => 'Payments due (আমি দিবো)',
+                'group' => 'Accounts',
+                'category' => 'reminder',
+                'trigger' => 'daily',
+                'description' => 'Supplier bills, supplier kisti, loan EMI, salary and recurring bills due within the days below (Accounts › Payables).',
+                'placeholders' => ['count', 'total', 'list', 'overdue', 'date', 'business'],
+                'conditions' => [
+                    'days_before' => ['label' => 'Remind about payments due within (days)', 'type' => 'number', 'default' => 1],
+                ],
+                'audiences' => [
+                    'owner' => [
+                        'channels' => ['sms'],
+                        'send_time' => '09:00',
+                        'sms' => 'দিতে হবে: {count}টা payment, মোট {total} টাকা — {list}। মেয়াদ পার: {overdue}টা — {business}',
+                    ],
+                    'staff' => [
+                        'active' => true,
+                        'channels' => ['database', 'push'],
+                        'send_time' => '09:00',
+                        'push_title' => 'Payments due',
+                        'push' => '{count} payment(s) · {total} Tk: {list} · overdue {overdue}',
+                    ],
+                    'accountant' => [
+                        'active' => true,
+                        'channels' => ['database', 'email'],
+                        'send_time' => '09:00',
+                        'email_subject' => 'Payments due — {total} Tk',
+                        'email' => "{count} payment(s) are due soon, {total} Tk in all:\n{list}\n\nOverdue: {overdue}\n\n{business}",
+                        'push_title' => 'Payments due',
+                        'push' => '{count} payment(s) · {total} Tk: {list} · overdue {overdue}',
+                    ],
+                ],
+            ],
+
+            'kisti.due' => [
+                'label' => 'Kisti due (customer)',
+                'group' => 'Accounts',
+                'category' => 'reminder',
+                'trigger' => 'daily',
+                'description' => 'Customer kisti (Loans & EMI › kisti sales), the days below before and on the due date. While the customer rule is on with SMS, the older Accounts › Settings kisti SMS stops (no double SMS).',
+                'placeholders' => ['name', 'amount', 'kisti_no', 'date', 'when', 'count', 'total', 'list', 'business'],
+                'conditions' => [
+                    'days_before' => ['label' => 'Also remind this many days before the due date', 'type' => 'number', 'default' => 1],
+                ],
+                'audiences' => [
+                    'customer' => [
+                        'channels' => ['sms', 'email'],
+                        'send_time' => '09:00',
+                        'sms' => 'প্রিয় {name}, আপনার কিস্তি {kisti_no} — {amount} টাকা {when} ({date}) দেওয়ার কথা। ধন্যবাদ — {business}',
+                        'email_subject' => 'Kisti {kisti_no} — {amount} Tk due {date}',
+                    ],
+                    'staff' => [
+                        'active' => true,
+                        'channels' => ['database'],
+                        'send_time' => '09:00',
+                        'push_title' => 'Kisti to collect',
+                        'push' => '{count} kisti · {total} Tk: {list}',
+                    ],
+                    'accountant' => [
+                        'active' => true,
+                        'channels' => ['database'],
+                        'send_time' => '09:00',
+                        'push_title' => 'Kisti to collect',
+                        'push' => '{count} kisti · {total} Tk: {list}',
+                    ],
+                ],
+            ],
+            'loan.emi_due' => [
+                'label' => 'Loan EMI due (আমি দিবো)',
+                'group' => 'Accounts',
+                'category' => 'reminder',
+                'trigger' => 'daily',
+                'description' => 'Loan EMI the days below before its date. While the owner rule is on with SMS, the older Accounts › Settings "EMI in 3 days" SMS stops (no double SMS).',
+                'placeholders' => ['count', 'total', 'list', 'date', 'when', 'business'],
+                'conditions' => [
+                    'days_before' => ['label' => 'Remind this many days before the EMI date', 'type' => 'number', 'default' => 3],
+                ],
+                'audiences' => [
+                    'owner' => [
+                        'channels' => ['sms'],
+                        'send_time' => '09:30',
+                        'sms' => 'Loan EMI {when} ({date}): {list} — {business}',
+                    ],
+                    'staff' => [
+                        'active' => true,
+                        'channels' => ['database', 'push'],
+                        'send_time' => '09:30',
+                        'push_title' => 'Loan EMI {when}',
+                        'push' => '{count} EMI · {total} Tk on {date}: {list}',
+                    ],
+                    'accountant' => [
+                        'active' => true,
+                        'channels' => ['database', 'email'],
+                        'send_time' => '09:30',
+                        'email_subject' => 'Loan EMI on {date} — {total} Tk',
+                        'email' => "{count} loan EMI(s) are due on {date}, {total} Tk in all:\n{list}\n\n{business}",
+                        'push_title' => 'Loan EMI {when}',
+                        'push' => '{count} EMI · {total} Tk on {date}: {list}',
+                    ],
+                ],
+            ],
+
+            // ── Cheques ────────────────────────────────────────────
+            'cheque.received_due' => [
+                'label' => 'Cheque to deposit (received)',
+                'group' => 'Cheques',
+                'category' => 'reminder',
+                'trigger' => 'daily',
+                'description' => 'Cheques we received and still hold, the days below before their date (Accounts › Cheques). Rescheduling moves the reminder.',
+                'placeholders' => ['name', 'amount', 'cheque_no', 'bank', 'date', 'count', 'total', 'list', 'business'],
+                'conditions' => [
+                    'days_before' => ['label' => 'Remind this many days before the cheque date', 'type' => 'number', 'default' => 1],
+                ],
+                'audiences' => [
+                    'owner' => [
+                        'active' => true,
+                        'channels' => ['sms'],
+                        'send_time' => '09:00',
+                        'sms' => 'Cheque জমা দিন ({date}): {count}টা, মোট {total} টাকা — {list} — {business}',
+                    ],
+                    'staff' => [
+                        'active' => true,
+                        'channels' => ['database', 'push'],
+                        'send_time' => '09:00',
+                        'push_title' => 'Cheques to deposit on {date}',
+                        'push' => '{count} cheque(s) · {total} Tk: {list}',
+                    ],
+                    'accountant' => [
+                        'active' => true,
+                        'channels' => ['database', 'email'],
+                        'send_time' => '09:00',
+                        'email_subject' => 'Cheques to deposit on {date} — {total} Tk',
+                        'email' => "{count} received cheque(s) can be deposited on {date}, {total} Tk in all:\n{list}\n\n{business}",
+                        'push_title' => 'Cheques to deposit on {date}',
+                        'push' => '{count} cheque(s) · {total} Tk: {list}',
+                    ],
+                    'customer' => [
+                        'channels' => ['sms', 'email'],
+                        'send_time' => '10:00',
+                        'sms' => 'প্রিয় {name}, আপনার {bank} cheque নং {cheque_no} ({amount} টাকা) {date} তারিখে জমা দেওয়া হবে। অনুগ্রহ করে account-এ টাকা রাখুন — {business}',
+                        'email_subject' => 'Cheque {cheque_no} will be deposited on {date}',
+                    ],
+                ],
+            ],
+            'cheque.issued_due' => [
+                'label' => 'Our cheque is due (issued)',
+                'group' => 'Cheques',
+                'category' => 'reminder',
+                'trigger' => 'daily',
+                'description' => 'Cheques we gave, every day from the days below before the release date until that date — keep enough in the bank. Rescheduling moves the reminder.',
+                'placeholders' => ['count', 'total', 'list', 'balance', 'date', 'business'],
+                'conditions' => [
+                    'days_before' => ['label' => 'Start reminding this many days before the release date', 'type' => 'number', 'default' => 2],
+                ],
+                'audiences' => [
+                    'owner' => [
+                        'active' => true,
+                        'channels' => ['sms'],
+                        'send_time' => '09:00',
+                        'sms' => 'দেওয়া cheque: {count}টা, মোট {total} টাকা — {list}। Bank-এ আছে {balance} টাকা — {business}',
+                    ],
+                    'staff' => [
+                        'active' => true,
+                        'channels' => ['database', 'push'],
+                        'send_time' => '09:00',
+                        'push_title' => 'Issued cheques due',
+                        'push' => '{count} cheque(s) · {total} Tk: {list} · bank {balance} Tk',
+                    ],
+                    'accountant' => [
+                        'active' => true,
+                        'channels' => ['database', 'email'],
+                        'send_time' => '09:00',
+                        'email_subject' => 'Issued cheques due — {total} Tk',
+                        'email' => "{count} cheque(s) we issued are due, {total} Tk in all:\n{list}\n\nBalance in those bank accounts: {balance} Tk\n\n{business}",
+                        'push_title' => 'Issued cheques due',
+                        'push' => '{count} cheque(s) · {total} Tk: {list} · bank {balance} Tk',
+                    ],
+                ],
+            ],
+            'cheque.bounced' => [
+                'label' => 'Cheque bounced',
+                'group' => 'Cheques',
+                'category' => 'alert',
+                'trigger' => 'instant',
+                'description' => 'Accounts › Cheques › Bounce: the customer (a cheque they gave) or the supplier (a cheque we gave), and our own people.',
+                'placeholders' => ['name', 'party', 'amount', 'cheque_no', 'bank', 'direction', 'reason', 'date', 'business'],
+                'audiences' => [
+                    'customer' => [
+                        'active' => true,
+                        'channels' => ['sms', 'email'],
+                        'sms' => 'প্রিয় {name}, আপনার দেওয়া {bank} cheque নং {cheque_no} ({amount} টাকা) bounce করেছে। অনুগ্রহ করে দ্রুত পরিশোধ করুন — {business}',
+                        'email_subject' => 'Cheque {cheque_no} bounced',
+                    ],
+                    'supplier' => [
+                        'active' => true,
+                        'channels' => ['sms', 'email'],
+                        'sms' => 'প্রিয় {name}, আমাদের দেওয়া cheque নং {cheque_no} ({amount} টাকা) clear হয়নি। শীঘ্রই পরিশোধের ব্যবস্থা করছি — {business}',
+                        'email_subject' => 'About our cheque {cheque_no}',
+                    ],
+                    'owner' => [
+                        'active' => true,
+                        'channels' => ['sms'],
+                        'sms' => 'Cheque bounce: {party} · {cheque_no} · {amount} টাকা ({direction}) — {reason} — {business}',
+                    ],
+                    'staff' => [
+                        'active' => true,
+                        'channels' => ['database', 'push'],
+                        'push_title' => 'Cheque bounced — {party}',
+                        'push' => '{direction} {cheque_no} · {amount} Tk · {reason}',
+                    ],
+                    'accountant' => [
+                        'active' => true,
+                        'channels' => ['database', 'email'],
+                        'email_subject' => 'Cheque bounced — {party}, {amount} Tk',
+                        'email' => "{direction} {bank} {cheque_no} ({amount} Tk) from / to {party} bounced on {date}.\nReason: {reason}\n\n{business}",
+                        'push_title' => 'Cheque bounced — {party}',
+                        'push' => '{direction} {cheque_no} · {amount} Tk · {reason}',
                     ],
                 ],
             ],

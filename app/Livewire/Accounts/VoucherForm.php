@@ -7,6 +7,7 @@ use App\Enums\PaymentMethod;
 use App\Models\Account;
 use App\Models\JournalEntry;
 use App\Models\MasterProfile;
+use App\Services\Accounts\Cheques;
 use App\Services\Accounts\ExpenseCategories;
 use App\Services\Accounts\Vouchers;
 use App\Services\Profiles\LedgerAccounts;
@@ -71,6 +72,7 @@ class VoucherForm extends Component
             'note'        => '',
             'method'      => PaymentMethod::forAccount($this->cashAccounts[0] ?? null)->value,
             'reference'   => '',
+            'bank'        => '',
         ];
         $this->lines = [$this->blankLine(), $this->blankLine()];
 
@@ -158,6 +160,16 @@ class VoucherForm extends Component
     protected function takesPaymentMethod(): bool
     {
         return in_array($this->type, ['receipt', 'payment', 'expense'], true);
+    }
+
+    /**
+     * A new receipt / payment by cheque goes to Accounts › Cheques instead:
+     * no money moves (and no due changes) until the cheque is cleared.
+     */
+    protected function chequeMode(): bool
+    {
+        return ! $this->editId && in_array($this->type, ['receipt', 'payment'], true)
+            && ($this->f['method'] ?? null) === PaymentMethod::CHEQUE->value;
     }
 
     public function addLine(): void
@@ -263,7 +275,13 @@ class VoucherForm extends Component
         $this->validate($this->rules(), [], [
             'f.account_id' => 'account', 'f.to_id' => 'to account', 'f.ledger_id' => $this->type === 'expense' ? 'category' : 'ledger',
             'f.amount' => 'amount', 'lines.*.account_id' => 'account', 'files.*' => 'attachment',
-        ]);
+        ] + ($this->chequeMode() ? ['f.reference' => 'cheque no.'] : []));
+
+        if ($this->chequeMode()) {
+            $this->saveCheque();
+
+            return;
+        }
 
         $vouchers = app(Vouchers::class);
         $profile = $this->party;
@@ -295,6 +313,35 @@ class VoucherForm extends Component
         $this->dispatch('toast', type: str_contains($message, 'Not posted') ? 'warning' : 'success', message: $message);
     }
 
+    protected function saveCheque(): void
+    {
+        $f = $this->f;
+        $profile = $this->party;
+
+        try {
+            $cheque = app(Cheques::class)->create([
+                'direction'   => $this->type === 'receipt' ? 'received' : 'issued',
+                'cheque_no'   => $f['reference'],
+                'bank_name'   => $f['bank'] ?? null,
+                'profile_id'  => $profile?->id,
+                'party_label' => $profile ? null : ($f['party_label'] ?: null),
+                'amount'      => round((float) $f['amount'], 2),
+                'cheque_date' => $f['date'],
+                'account_id'  => (int) $f['account_id'],
+                'ledger_id'   => (int) $f['ledger_id'],
+                'note'        => $f['note'] ?: null,
+            ]);
+        } catch (RuntimeException $e) {
+            $this->addError('f.amount', $e->getMessage());
+
+            return;
+        }
+
+        $this->open = false;
+        $this->dispatch('cheque-saved', id: $cheque->id);
+        $this->dispatch('toast', type: 'success', message: "Cheque {$cheque->label()} রাখা হলো (Accounts › Cheques) — clear হলে voucher হবে।");
+    }
+
     protected function rules(): array
     {
         $rules = [
@@ -323,7 +370,8 @@ class VoucherForm extends Component
                 'f.party_label' => 'nullable|string|max:120',
             ] + ($this->takesPaymentMethod() ? [
                 'f.method'    => ['required', Rule::in(PaymentMethod::values(PaymentMethod::manual()))],
-                'f.reference' => 'nullable|string|max:100',
+                'f.reference' => $this->chequeMode() ? 'required|string|max:60' : 'nullable|string|max:100',
+                'f.bank'      => 'nullable|string|max:120',
             ] : []),
         };
     }
@@ -399,6 +447,7 @@ class VoucherForm extends Component
             'canPost' => AccountsAccess::can('post'),
             'money'   => fn ($v) => Bdt::money($v),
             'attachAbove' => AccountsSettings::attachmentThreshold(),
+            'chequeMode' => $this->chequeMode(),
         ]);
     }
 }

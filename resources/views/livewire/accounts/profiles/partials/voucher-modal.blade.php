@@ -5,6 +5,7 @@
         $lbl = 'text-[13px] font-semibold';
         $picked = $this->voucherProfile;
         $kisti = $this->voucherKisti;
+        $isCheque = $this->voucherIsCheque();
     @endphp
     <x-accounts.modal :title="$this::VOUCHER_TITLES[$voucherType]" close="closeVoucher">
         <div class="flex flex-col gap-[6px]">
@@ -57,12 +58,19 @@
                 @error('voucher.amount') <span class="text-[12px] text-[#b91c1c]">{{ $message }}</span> @enderror
             </div>
             <div class="flex flex-col gap-[6px]">
-                <label for="v-date" class="{{ $lbl }}">Date</label>
+                <label for="v-date" class="{{ $lbl }}">{{ $isCheque ? 'Cheque-এর তারিখ' : 'Date' }}</label>
                 <input id="v-date" type="text" readonly placeholder="YYYY-MM-DD" wire:model="voucher.date" class="flatpickr-only-date cursor-pointer bg-white {{ $input }}">
             </div>
             <x-payment-method-field method="voucher.method" reference="voucher.reference" :value="$voucher['method'] ?? null"
                 :label="in_array($voucherType, ['collect', 'capital']) ? 'Received by' : 'Paid by'"
                 :input-class="$input" label-class="mb-[6px] block {{ $lbl }}" class="sm:col-span-2 !gap-[12px]" />
+            @if ($isCheque)
+                <div class="flex flex-col gap-[6px] sm:col-span-2">
+                    <label for="v-bank" class="{{ $lbl }}">Bank</label>
+                    <input id="v-bank" type="text" maxlength="120" wire:model="voucher.bank" placeholder="যেমন: DBBL, Mirpur" class="{{ $input }}">
+                    @error('voucher.bank') <span class="text-[12px] text-[#b91c1c]">{{ $message }}</span> @enderror
+                </div>
+            @endif
             <div class="flex flex-col gap-[6px] {{ $voucherType === 'salary_advance' ? '' : 'sm:col-span-2' }}">
                 <label for="v-account" class="{{ $lbl }}">{{ in_array($voucherType, ['collect', 'capital']) ? 'Received in' : 'Paid from' }}</label>
                 <select id="v-account" wire:model="voucher.account_id" class="{{ $input }}">
@@ -87,10 +95,14 @@
             </div>
         @endif
 
+        @if ($isCheque)
+            <div class="rounded-[9px] bg-[#eef2ff] px-[12px] py-[9px] text-[12.5px] text-[#3730a3]">Cheque-টা <a href="{{ route('accounts.cheques') }}" wire:navigate class="font-semibold underline">Cheques</a>-এ রাখা হবে। {{ ['collect' => 'বাকি কমবে', 'supplier_advance' => 'Advance বসবে'][$voucherType] ?? 'দেনা কমবে' }} cheque clear হলে।</div>
+        @endif
+
         <x-slot:footer>
             <button type="button" wire:click="closeVoucher" class="rounded-[9px] border border-[#e5e7eb] bg-white px-[18px] py-[10px] text-[14px] text-[#374151]">Cancel</button>
             <button type="button" wire:click="saveVoucher" wire:loading.attr="disabled" wire:target="saveVoucher"
-                    class="rounded-[9px] border-0 bg-[#4f46e5] px-[22px] py-[10px] text-[14px] font-bold text-white disabled:opacity-60">Save &amp; post</button>
+                    class="rounded-[9px] border-0 bg-[#4f46e5] px-[22px] py-[10px] text-[14px] font-bold text-white disabled:opacity-60">{{ $isCheque ? 'Save cheque' : 'Save & post' }}</button>
         </x-slot:footer>
     </x-accounts.modal>
 @endif

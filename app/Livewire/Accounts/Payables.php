@@ -5,6 +5,7 @@ namespace App\Livewire\Accounts;
 use App\Enums\Accounts\TransactionType;
 use App\Enums\PaymentMethod;
 use App\Models\AccountsSupplierBill;
+use App\Models\Cheque;
 use App\Models\Installment;
 use App\Models\LoanRepaymentSchedule;
 use App\Models\MasterProfile;
@@ -77,8 +78,36 @@ class Payables extends Component
     #[Computed]
     public function all(): Collection
     {
+        // Advance cheques pay no bill — they become an advance when they clear.
+        $cheques = Cheque::open()->where('direction', 'issued')->whereNotNull('master_profile_id')
+            ->orderBy('due_date')->get(['id', 'cheque_no', 'amount', 'due_date', 'master_profile_id', 'meta'])
+            ->reject(fn (Cheque $c) => $c->isAdvance())->values();
+
         return app(PayablesSchedule::class)->rows()
-            ->map(fn ($r) => $r + ['when' => PayablesSchedule::when($r['due'])]);
+            ->map(fn ($r) => $r + ['when' => PayablesSchedule::when($r['due']), 'cheque' => $this->chequeFor($r, $cheques)]);
+    }
+
+    /**
+     * An issued cheque not cleared yet that pays this row: written for this
+     * bill (bill => true — paying it again would pay twice), or given to the
+     * same supplier without naming bills (just a note).
+     *
+     * @param  Collection<int, Cheque>  $cheques
+     * @return array{text: string, bill: bool}|null
+     */
+    protected function chequeFor(array $row, Collection $cheques): ?array
+    {
+        $text = fn (Cheque $c) => "Cheque #{$c->cheque_no} · " . Bdt::money($c->amount) . ' · ' . $c->due_date->format('d M');
+
+        if ($row['ref']['type'] === 'bill' && ($c = $cheques->first(fn (Cheque $c) => in_array((int) $row['ref']['id'], array_map('intval', (array) ($c->meta['bill_ids'] ?? [])), true)))) {
+            return ['text' => $text($c), 'bill' => true];
+        }
+
+        $c = $row['src'] === 'supplier' && $row['profile_id']
+            ? $cheques->first(fn (Cheque $c) => (int) $c->master_profile_id === (int) $row['profile_id'] && empty($c->meta['bill_ids']))
+            : null;
+
+        return $c ? ['text' => $text($c), 'bill' => false] : null;
     }
 
     #[Computed]
@@ -125,7 +154,8 @@ class Payables extends Component
         $promised = (float) \App\Models\PromiseToPay::where('kind', 'promise')->where('status', 'open')->where('due_date', '<=', $until)->sum('amount');
         $kisti = (float) Installment::whereHas('plan', fn ($q) => $q->where('role', 'customer')->where('status', 'active'))
             ->where('status', '!=', 'paid')->where('due_date', '<=', $until)->sum(DB::raw('adjusted_amount - paid_amount'));
-        $inflow = $cod + $promised + $kisti;
+        $cheques = (float) Cheque::open()->where('direction', 'received')->where('due_date', '<=', $until)->sum('amount');
+        $inflow = $cod + $promised + $kisti + $cheques;
 
         $tight = $this->all->where('when', '!=', 'overdue')->groupBy(fn ($r) => $r['due']->toDateString())->sortByDesc(fn ($g) => $g->sum('amount'))->first();
         $biggest = collect($this->cashAccounts)->first();
@@ -188,6 +218,11 @@ class Payables extends Component
             if (! $row) {
                 continue;
             }
+            if ($row['cheque']['bill'] ?? false) {
+                $skipped[] = "{$row['payee']} ({$row['cheque']['text']} দেওয়া আছে)";
+
+                continue;
+            }
             try {
                 $entry = $this->draftFor($row, (int) $this->payFrom, $row['amount'], today()->toDateString());
                 // No method picker on the bulk action — taken from the pay-from account.
@@ -208,6 +243,11 @@ class Payables extends Component
     {
         $row = $this->all->firstWhere('key', $key);
         abort_unless($row, 404);
+        if ($row['cheque']['bill'] ?? false) {
+            $this->dispatch('toast', type: 'warning', message: "এই bill-এর জন্য {$row['cheque']['text']} দেওয়া আছে — Cheques থেকে clear করুন।");
+
+            return;
+        }
         $this->payKey = $key;
         $this->pay = [
             'account_id' => $this->payFrom,

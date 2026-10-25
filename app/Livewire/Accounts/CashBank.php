@@ -7,6 +7,7 @@ use App\Enums\Accounts\TransactionType;
 use App\Models\Account;
 use App\Models\BankReconciliation;
 use App\Models\CashCount;
+use App\Models\Cheque;
 use App\Models\JournalEntry;
 use App\Services\Accounts\ExpenseCategories;
 use App\Services\Accounts\Vouchers;
@@ -295,16 +296,23 @@ class CashBank extends Component
         $stmt = $this->statement === '' ? null : (float) preg_replace('/[^\d.\-]/', '', $this->statement);
         $diff = $stmt === null ? null : round($stmt - $a['balance'], 2);
 
-        $match = null;
+        $match = $cheque = null;
         if ($diff !== null && abs($diff) >= 0.5) {
             $match = ($this->drafts[$a['id']] ?? collect())->groupBy('id')
                 ->first(fn ($ls) => abs(((float) $ls->sum('debit') - (float) $ls->sum('credit')) - $diff) < 0.5);
+
+            // More in the bank = a received cheque was paid in; less = one we issued was presented.
+            $cheque = $match ? null : Cheque::open()->where('account_id', $a['id'])
+                ->where('direction', $diff > 0 ? 'received' : 'issued')
+                ->whereBetween('amount', [abs($diff) - 0.5, abs($diff) + 0.5])
+                ->orderBy('due_date')->first();
         }
 
         [$text, $primary, $secondary, $action] = match (true) {
             $diff === null => ['Statement / app-এর balance লিখুন — মিলছে কিনা দেখাবে।', 'Mark reconciled', 'View statement', 'none'],
             abs($diff) < 0.5 => ['App / statement-এর balance আর software মিলে গেছে।', 'Mark reconciled', 'View statement', 'mark'],
-            (bool) $match => ['Statement-এ ' . Bdt::money(abs($diff)) . ' ' . ($diff > 0 ? 'জমা' : 'খরচ') . ' আছে, কিন্তু ' . ($match->first()->voucher_ref ?: $match->first()->entry_number) . ' এখনো draft। Post করলে মিলে যাবে।', 'Match with ' . ($match->first()->voucher_ref ?: $match->first()->entry_number), 'Add bank entry', 'match'],
+            (bool) $cheque => ['Statement-এ ' . Bdt::money(abs($diff)) . ' ' . ($diff > 0 ? 'জমা' : 'খরচ') . ' আছে — ' . $cheque->partyName() . '-এর cheque #' . $cheque->cheque_no . ' (' . $cheque->due_date->format('d M') . ') এখনো clear করা হয়নি। Clear করলে মিলে যাবে।', 'Clear cheque #' . $cheque->cheque_no, 'Add bank entry', 'cheque'],
+            (bool) $match =>['Statement-এ ' . Bdt::money(abs($diff)) . ' ' . ($diff > 0 ? 'জমা' : 'খরচ') . ' আছে, কিন্তু ' . ($match->first()->voucher_ref ?: $match->first()->entry_number) . ' এখনো draft। Post করলে মিলে যাবে।', 'Match with ' . ($match->first()->voucher_ref ?: $match->first()->entry_number), 'Add bank entry', 'match'],
             $diff > 0 && $diff <= 2000 => [Bdt::money($diff) . ' বেশি — সম্ভবত bank interest / cash-back, এখনো entry হয়নি।', 'Add interest ' . Bdt::money($diff), 'Ignore', 'interest'],
             $diff < 0 && $diff >= -2000 => [Bdt::money(abs($diff)) . ' কম — সম্ভবত bank / MFS charge, এখনো entry হয়নি।', 'Add charge ' . Bdt::money(abs($diff)), 'Ignore', 'charge'],
             default => [Bdt::money(abs($diff)) . ' ' . ($diff > 0 ? 'বেশি' : 'কম') . ' — কোনো entry বাদ পড়েছে কিনা দেখুন।', 'Add bank entry', 'Ignore', 'entry'],
@@ -312,7 +320,7 @@ class CashBank extends Component
 
         return [
             'stmt' => $stmt, 'diff' => $diff, 'text' => $text, 'primary' => $primary, 'secondary' => $secondary,
-            'action' => $action, 'matchId' => $match?->first()->id, 'ok' => $diff !== null && abs($diff) < 0.5,
+            'action' => $action, 'matchId' => $match?->first()->id, 'chequeId' => $cheque?->id, 'ok' => $diff !== null && abs($diff) < 0.5,
             'last' => $a['last_reconciled_at']?->format('d M Y') ?? 'Never',
         ];
     }
@@ -326,6 +334,7 @@ class CashBank extends Component
         match ($r['action'] ?? 'none') {
             'mark'     => $this->markReconciled(),
             'match'    => $this->redirectRoute('accounts.posting', ['v' => $r['matchId'], 'tab' => 'open'], navigate: true),
+            'cheque'   => $this->redirectRoute('accounts.cheques', ['clear' => $r['chequeId']], navigate: true),
             'interest' => $this->quickEntry('receipt', '4100', $r['diff'], 'Bank interest / cash-back'),
             'charge'   => $this->quickEntry('payment', ExpenseCategories::CHARGES, abs($r['diff']), 'Bank / MFS charge'),
             'entry'    => $this->dispatch('voucher-form', type: $r['diff'] > 0 ? 'receipt' : 'payment', preset: ['account_id' => $a['id'], 'amount' => abs($r['diff'])]),
@@ -340,7 +349,7 @@ class CashBank extends Component
 
         if (in_array($r['action'] ?? 'none', ['none', 'mark'], true)) {
             $this->redirectRoute('accounts.transactions', ['account' => $a['id'], 'period' => 'month'], navigate: true);
-        } elseif ($r['action'] === 'match') {
+        } elseif (in_array($r['action'], ['match', 'cheque'], true)) {
             $this->dispatch('voucher-form', type: $r['diff'] > 0 ? 'receipt' : 'payment', preset: ['account_id' => $a['id'], 'amount' => abs($r['diff'])]);
         } else {
             $this->statement = '';

@@ -3,9 +3,12 @@
 namespace App\Livewire\Accounts\Profiles;
 
 use App\Models\City;
+use App\Models\Customer;
 use App\Models\MasterProfile;
+use App\Models\Supplier;
 use App\Services\Profiles\ProfileBalances;
 use App\Services\Profiles\ProfileCounts;
+use App\Support\AccountsAccess;
 use App\Support\Bdt;
 use App\Support\BdPhone;
 use Illuminate\Database\Eloquent\Builder;
@@ -66,6 +69,22 @@ class ProfileIndex extends Component
         $this->resetPage();
     }
 
+    /** Bring a removed profile back (Status › Deleted), with its customer / supplier record if that was removed too. */
+    public function restoreProfile(int $id): void
+    {
+        AccountsAccess::authorize('create');
+
+        $profile = MasterProfile::onlyTrashed()->findOrFail($id);
+        $profile->restore();
+        Customer::onlyTrashed()->where('master_profile_id', $profile->id)->get()->each->restore();
+        Supplier::onlyTrashed()->where('master_profile_id', $profile->id)->get()->each->restore();
+        $profile->logActivity('setting', 'Profile restored');
+
+        ProfileCounts::flush();
+        unset($this->rows);
+        $this->dispatch('toast', type: 'success', message: "{$profile->display_name} restored.");
+    }
+
     public function setBal(string $bal): void
     {
         $this->bal = array_key_exists($bal, self::BAL_CHIPS) ? $bal : 'All';
@@ -101,7 +120,10 @@ class ProfileIndex extends Component
             $query->where('master_profiles.city_id', (int) $this->district);
         }
 
-        if ($this->status !== 'all') {
+        if ($this->status === 'deleted') {
+            // Removed profiles (Admin › Master Profile / Customers / Suppliers delete) — restorable from the row.
+            $query->onlyTrashed();
+        } elseif ($this->status !== 'all') {
             $query->where('master_profiles.status', $this->status === 'inactive' ? 'inactive' : 'active');
         }
 

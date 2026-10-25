@@ -86,27 +86,49 @@ class Attributes extends Component
 
     public function createAttribute(): void
     {
+        // Unique among live attributes only — a removed one with this slug is restored below.
         $this->validate([
             'newName' => 'required|string|max:100',
-            'newSlug' => 'required|string|max:120|unique:attributes,slug',
+            'newSlug' => 'required|string|max:120|unique:attributes,slug,NULL,id,deleted_at,NULL',
             'newType' => 'required|in:select,color,image,text',
         ]);
 
-        $attribute = Attribute::create([
-            'name'   => $this->newName,
-            'slug'   => $this->newSlug,
-            'type'   => $this->newType,
-            'status' => 'active',
-        ]);
+        $fields = ['name' => $this->newName, 'slug' => $this->newSlug, 'type' => $this->newType, 'status' => 'active'];
+
+        // The slug stays taken by a removed attribute (unique index), so adding it again brings that one back.
+        if ($attribute = Attribute::onlyTrashed()->where('slug', $this->newSlug)->first()) {
+            $attribute->restore();
+            $attribute->update($fields);
+            $event = 'restored';
+            $message = 'Attribute restored — its earlier values are back too';
+        } else {
+            $attribute = Attribute::create($fields);
+            $event = 'created';
+            $message = 'Attribute added successfully';
+        }
 
         activity('catalog')
             ->causedBy(auth()->user())
             ->performedOn($attribute)
-            ->event('created')
-            ->log("Attribute \"{$attribute->name}\" was added");
+            ->event($event)
+            ->log("Attribute \"{$attribute->name}\" was " . ($event === 'restored' ? 'restored' : 'added'));
 
         $this->createModal = false;
-        $this->dispatch('toast', ['type' => 'success', 'message' => 'Attribute added successfully']);
+        $this->dispatch('toast', ['type' => 'success', 'message' => $message]);
+    }
+
+    public function restoreAttribute(int $id): void
+    {
+        $attribute = Attribute::onlyTrashed()->findOrFail($id);
+        $attribute->restore();
+
+        activity('catalog')
+            ->causedBy(auth()->user())
+            ->performedOn($attribute)
+            ->event('restored')
+            ->log("Attribute \"{$attribute->name}\" was restored");
+
+        $this->dispatch('toast', ['type' => 'success', 'message' => "{$attribute->name} restored"]);
     }
 
     public function editAttribute(int $id): void
@@ -128,10 +150,15 @@ class Attributes extends Component
 
         $this->validate([
             'editName'   => 'required|string|max:100',
-            'editSlug'   => 'required|string|max:120|unique:attributes,slug,' . $attribute->id,
+            'editSlug'   => 'required|string|max:120|unique:attributes,slug,' . $attribute->id . ',id,deleted_at,NULL',
             'editType'   => 'required|in:select,color,image,text',
             'editStatus' => 'required|in:active,inactive',
         ]);
+
+        if (Attribute::onlyTrashed()->where('slug', $this->editSlug)->exists()) {
+            $this->addError('editSlug', 'A removed attribute uses this slug — restore it from "Removed attributes" instead.');
+            return;
+        }
 
         $attribute->update([
             'name'   => $this->editName,
@@ -193,9 +220,10 @@ class Attributes extends Component
     {
         $attribute = Attribute::findOrFail($this->valuesAttributeId);
 
+        // Unique among this attribute's live values only — a removed one with this slug is restored below.
         $this->validate([
             'newValueText' => 'required|string|max:100',
-            'newValueSlug' => 'required|string|max:120|unique:attribute_values,slug,NULL,id,attribute_id,' . $attribute->id,
+            'newValueSlug' => 'required|string|max:120|unique:attribute_values,slug,NULL,id,attribute_id,' . $attribute->id . ',deleted_at,NULL',
         ]);
 
         $swatchType  = null;
@@ -209,24 +237,41 @@ class Attributes extends Component
             $swatchValue = $this->newSwatchImageId ?: null;
         }
 
-        $maxOrder = $attribute->values()->max('sort_order') ?? 0;
-
-        AttributeValue::create([
-            'attribute_id' => $attribute->id,
+        $fields = [
             'value'        => $this->newValueText,
-            'slug'         => $this->newValueSlug,
             'swatch_type'  => $swatchType,
             'swatch_value' => $swatchValue,
-            'sort_order'   => $maxOrder + 1,
-        ]);
+            'sort_order'   => ($attribute->values()->max('sort_order') ?? 0) + 1,
+        ];
+
+        // The slug stays taken by a removed value (unique index), so adding it again brings that
+        // row back — products that used it keep pointing at the same value.
+        $removed = AttributeValue::onlyTrashed()->where('attribute_id', $attribute->id)->where('slug', $this->newValueSlug)->first();
+
+        if ($removed) {
+            $removed->restore();
+            $removed->update($fields);
+        } else {
+            AttributeValue::create($fields + ['attribute_id' => $attribute->id, 'slug' => $this->newValueSlug]);
+        }
 
         $this->resetValueForm();
-        $this->dispatch('toast', ['type' => 'success', 'message' => 'Value added']);
+        $this->dispatch('toast', ['type' => 'success', 'message' => $removed ? 'Value restored' : 'Value added']);
+    }
+
+    public function restoreValue(int $id): void
+    {
+        $value = AttributeValue::onlyTrashed()->where('attribute_id', $this->valuesAttributeId)->findOrFail($id);
+
+        $value->restore();
+        $value->update(['sort_order' => (AttributeValue::where('attribute_id', $value->attribute_id)->max('sort_order') ?? 0) + 1]);
+
+        $this->dispatch('toast', ['type' => 'success', 'message' => "{$value->value} restored"]);
     }
 
     public function deleteValue(int $id): void
     {
-        AttributeValue::findOrFail($id)->delete();
+        AttributeValue::where('attribute_id', $this->valuesAttributeId)->findOrFail($id)->delete();
 
         if ($this->editingValueId === $id) {
             $this->cancelEditValue();
@@ -260,8 +305,13 @@ class Attributes extends Component
 
         $this->validate([
             'editValueText' => 'required|string|max:100',
-            'editValueSlug' => 'required|string|max:120|unique:attribute_values,slug,' . $value->id . ',id,attribute_id,' . $attribute->id,
+            'editValueSlug' => 'required|string|max:120|unique:attribute_values,slug,' . $value->id . ',id,attribute_id,' . $attribute->id . ',deleted_at,NULL',
         ]);
+
+        if (AttributeValue::onlyTrashed()->where('attribute_id', $attribute->id)->where('slug', $this->editValueSlug)->exists()) {
+            $this->addError('editValueSlug', 'A removed value uses this slug — restore it from "Removed values" below instead.');
+            return;
+        }
 
         $swatchType  = $value->swatch_type;
         $swatchValue = $value->swatch_value;
@@ -308,10 +358,14 @@ class Attributes extends Component
             : null;
 
         return view('livewire.admin.catalog.attributes', [
-            'attributes'      => $attributes,
-            'totalCount'      => Attribute::count(),
-            'activeCount'     => Attribute::where('status', 'active')->count(),
-            'valuesAttribute' => $valuesAttribute,
+            'attributes'        => $attributes,
+            'totalCount'        => Attribute::count(),
+            'activeCount'       => Attribute::where('status', 'active')->count(),
+            'valuesAttribute'   => $valuesAttribute,
+            'removedValues'     => $valuesAttribute
+                ? AttributeValue::onlyTrashed()->where('attribute_id', $valuesAttribute->id)->orderBy('value')->get()
+                : collect(),
+            'removedAttributes' => Attribute::onlyTrashed()->orderBy('name')->get(['id', 'name', 'slug', 'deleted_at']),
         ])->layout('layouts.admin.admin');
     }
 }

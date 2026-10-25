@@ -60,7 +60,7 @@
                 </select>
                 <label for="status-filter" class="text-[13px] text-[#4b5563]">Status</label>
                 <select id="status-filter" wire:model.live="status" class="{{ $select }}">
-                    <option value="active">Active</option><option value="inactive">Inactive</option><option value="all">All</option>
+                    <option value="active">Active</option><option value="inactive">Inactive</option><option value="all">All</option><option value="deleted">Deleted</option>
                 </select>
             </div>
             <div class="flex flex-wrap items-center gap-[16px]">
@@ -126,7 +126,14 @@
                                 <div class="text-[11.5px] text-[#6b7280]">{{ $b['label'] }}</div>
                             </td>
                             <td class="whitespace-nowrap px-[8px] py-[11px] text-[#6b7280]">{{ \App\Support\Bdt::relative($last) }}</td>
-                            <td class="px-[18px] py-[11px] text-right"><a href="{{ route('accounts.profiles.show', $p) }}" wire:navigate class="font-semibold">View</a></td>
+                            <td class="px-[18px] py-[11px] text-right">
+                                @if ($p->trashed())
+                                    <div class="text-[11.5px] text-[#991b1b]">Deleted {{ $p->deleted_at?->format('d M Y') }}</div>
+                                    <button type="button" wire:click="restoreProfile({{ $p->id }})" wire:loading.attr="disabled" class="mt-[3px] rounded-[7px] border-0 bg-[#4f46e5] px-[10px] py-[4px] text-[12px] font-semibold text-white">Restore</button>
+                                @else
+                                    <a href="{{ route('accounts.profiles.show', $p) }}" wire:navigate class="font-semibold">View</a>
+                                @endif
+                            </td>
                         </tr>
                     @endforeach
                 </tbody>

@@ -9,6 +9,7 @@ use App\Enums\Purchase\SupplierInvoiceType;
 use App\Exceptions\Accounts\LockedFiscalPeriodException;
 use App\Livewire\Accounts\Profiles\Concerns\HandlesVoucherModals;
 use App\Models\AccountsSupplierBill;
+use App\Models\Cheque;
 use App\Models\InstallmentPlan;
 use App\Models\JournalEntry;
 use App\Models\Loan;
@@ -91,6 +92,15 @@ class ProfileShow extends Component
     public function balances(): object
     {
         return app(ProfileBalances::class)->forProfile($this->profile->id);
+    }
+
+    /** Cheques not cashed yet, plus the last bounced ones — the due doesn't count them until they clear. */
+    #[Computed]
+    public function cheques()
+    {
+        return $this->profile->cheques()
+            ->where(fn ($q) => $q->whereIn('status', Cheque::OPEN)->orWhere(fn ($b) => $b->where('status', 'bounced')->where('bounced_at', '>=', today()->subDays(90))))
+            ->orderBy('due_date')->limit(8)->get();
     }
 
     /** Position cards (one per money role) + the net position. */

@@ -18,6 +18,7 @@ use App\Models\State;
 use App\Services\MasterProfileUuidGenerator;
 use App\Services\Profiles\ProfileCounts;
 use App\Services\UserService;
+use App\Support\AccountsAccess;
 use App\Support\BdPhone;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Arr;
@@ -162,6 +163,45 @@ class ProfileForm extends Component
             ->when($this->profile, fn ($q) => $q->whereKeyNot($this->profile->id))
             ->where(fn ($q) => $q->whereIn('phone', $variants)->orWhereIn('alt_phone', $variants))
             ->first();
+    }
+
+    /**
+     * A removed profile with this mobile / email — the form offers to bring
+     * it back (with its history) instead of starting a second one. Creating
+     * a new one is still allowed.
+     */
+    #[Computed]
+    public function deletedDuplicate(): ?MasterProfile
+    {
+        if ($this->profile || $this->duplicate) {
+            return null;
+        }
+
+        $variants = array_merge(BdPhone::variants($this->phone), BdPhone::variants($this->alt_phone));
+        $email = trim($this->email);
+
+        if (! $variants && $email === '') {
+            return null;
+        }
+
+        return MasterProfile::onlyTrashed()
+            ->where(fn ($q) => $q->when($variants, fn ($w) => $w->orWhereIn('phone', $variants)->orWhereIn('alt_phone', $variants))
+                ->when($email !== '', fn ($w) => $w->orWhere('email', $email)))
+            ->latest('deleted_at')->first();
+    }
+
+    public function restoreDeleted(): void
+    {
+        AccountsAccess::authorize('create');
+        $profile = $this->deletedDuplicate;
+        if (! $profile) {
+            return;
+        }
+
+        $profile->restore();
+        $profile->logActivity('setting', 'Profile restored');
+
+        $this->redirectRoute('accounts.profiles.show', $profile, navigate: true);
     }
 
     #[Computed(persist: true, seconds: 3600)]

@@ -452,13 +452,20 @@ class AuthModal extends Component
         $this->validate([
             'registerName' => 'required|string|max:150',
             'registerPhone' => ['required', 'string', 'max:20'],
-            'registerEmail' => ['nullable', 'email', 'max:150', Rule::unique('users', 'email')],
+            'registerEmail' => ['nullable', 'email', 'max:150', Rule::unique('users', 'email')->whereNull('deleted_at')],
             'registerPassword' => 'required|string|min:8',
             'agree' => 'accepted',
         ], [
             'registerEmail.unique' => 'An account with this email already exists.',
             'agree.accepted' => 'You must accept the terms to continue.',
         ]);
+
+        // A removed account keeps its email (unique), so say so instead of "already exists".
+        if ($this->registerEmail !== '' && User::onlyTrashed()->where('email', $this->registerEmail)->exists()) {
+            $this->addError('registerEmail', 'This email belonged to an account that was closed. Please contact us to reopen it, or use another email.');
+
+            return;
+        }
 
         $normalizedPhone = PhoneNumber::normalize($this->registerPhone);
         $nationalPhone = $normalizedPhone['phone'];

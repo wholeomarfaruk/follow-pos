@@ -12,6 +12,7 @@ use App\Models\User;
 use App\Services\UserService;
 use App\Support\DeviceActivity;
 use Illuminate\Support\Facades\Password;
+use Illuminate\Validation\Rule;
 use Livewire\Component;
 use Spatie\Permission\Models\Role;
 
@@ -33,6 +34,9 @@ class Users extends Component
     public string $newUserRole        = '';
     public string $newUserAddress     = '';
     public string $newUserBio         = '';
+
+    // A removed user still holds its email (unique), so the create form offers to bring it back.
+    public ?int   $deletedUserMatchId = null;
     public array  $newUserPanels      = [];
     public string $search         = '';
     public string $filterRole     = '';
@@ -174,6 +178,7 @@ class Users extends Component
             ->when($this->filterVerified === 'unverified', fn($q) => $q->whereNull('email_verified_at'))
             ->when($this->filterActive === 'active', fn($q) => $q->whereHas('devices', fn($d) => $d->where('last_active_at', '>=', $activeSince)))
             ->when($this->filterActive === 'inactive', fn($q) => $q->whereDoesntHave('devices', fn($d) => $d->where('last_active_at', '>=', $activeSince)))
+            ->when($this->filterActive === 'deleted', fn($q) => $q->onlyTrashed())
             ->latest()
             ->get();
 
@@ -187,6 +192,33 @@ class Users extends Component
                     $profile->id => "{$profile->display_name} ({$profile->uuid})",
                 ]),
         ])->layout('layouts.admin.admin');
+    }
+
+    /**
+     * Bring back a removed user (the "Deleted" filter, or the create form
+     * when its email belongs to one) — with its master profile if that was
+     * removed too.
+     */
+    public function restoreUser(int $id): void
+    {
+        abort_unless(auth()->user()?->can('user.delete'), 403);
+
+        $user = User::onlyTrashed()->findOrFail($id);
+        $user->restore();
+        MasterProfile::onlyTrashed()->whereKey($user->master_profile_id)->first()?->restore();
+
+        activity('users')
+            ->causedBy(auth()->user())
+            ->performedOn($user)
+            ->event('restored')
+            ->log("User \"{$user->name}\" ({$user->email}) was restored");
+
+        if ($this->deletedUserMatchId === $id) {
+            $this->deletedUserMatchId = null;
+            $this->UserModal = false;
+        }
+
+        $this->dispatch('toast', ['type' => 'success', 'message' => "{$user->name} restored"]);
     }
 
     public function deleteUser(int $id, UserService $userService): void
@@ -464,7 +496,7 @@ class Users extends Component
     {
         $this->validate([
             'newUserName'        => 'required|min:3|max:255',
-            'newUserEmail'       => 'required|email|unique:users,email',
+            'newUserEmail'       => ['required', 'email', Rule::unique('users', 'email')->whereNull('deleted_at')],
             'newUserPassword'    => 'required|min:8',
             'newUserGender'      => 'nullable|exists:genders,slug',
             'newUserPhone'       => 'nullable|string|max:20',
@@ -473,6 +505,13 @@ class Users extends Component
             'newUserAddress'     => 'nullable|max:500',
             'newUserBio'         => 'nullable|max:1000',
         ]);
+
+        // The email still belongs to a removed user: bring that user back (a new one can't take the email).
+        if ($deleted = User::onlyTrashed()->where('email', $this->newUserEmail)->first()) {
+            $this->deletedUserMatchId = $deleted->id;
+            $this->addError('newUserEmail', "এই email আগে মোছা user \"{$deleted->name}\"-এর — নিচের Restore দিয়ে তাকে ফিরিয়ে আনুন, অথবা অন্য email দিন।");
+            return;
+        }
 
         $user = $userService->create([
             'master_profile_id' => $this->newUserMasterProfileId ?: null,
@@ -507,7 +546,7 @@ class Users extends Component
             ->log("User \"{$user->name}\" ({$user->email}) was created");
 
         $this->reset([
-            'newUserMasterProfileId', 'newUserName', 'newUserEmail', 'newUserPassword',
+            'deletedUserMatchId', 'newUserMasterProfileId', 'newUserName', 'newUserEmail', 'newUserPassword',
             'newUserGender', 'newUserPhone', 'newUserCountryCode',
             'newUserRole', 'newUserPanels', 'newUserAddress', 'newUserBio',
         ]);

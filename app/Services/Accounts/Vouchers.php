@@ -783,9 +783,14 @@ class Vouchers
             }
 
             if ((int) $line->account_id === $ap && (float) $line->debit > 0 && $line->subledger_type === Supplier::class) {
-                // A payment drafted for one bill (Payables › Pay) settles that bill first, then the oldest.
+                // A payment drafted for one bill (Payables › Pay) settles that bill first, then the oldest;
+                // a cleared supplier cheque settles the bills it was written for (Purchase › Payment) first.
+                $chequeBills = $entry->source_type === \App\Models\Cheque::class
+                    ? array_values(array_filter(array_map('intval', (array) (\App\Models\Cheque::whereKey($entry->source_id)->value('meta')['bill_ids'] ?? []))))
+                    : [];
                 $bills = AccountsSupplierBill::where('supplier_id', $line->subledger_id)
-                    ->when($entry->source_type === AccountsSupplierBill::class, fn ($q) => $q->orderByRaw('id = ? desc', [(int) $entry->source_id]));
+                    ->when($entry->source_type === AccountsSupplierBill::class, fn ($q) => $q->orderByRaw('id = ? desc', [(int) $entry->source_id]))
+                    ->when($chequeBills, fn ($q) => $q->orderByRaw('id in (' . implode(',', $chequeBills) . ') desc'));
                 $this->allocate($bills, $entry, (float) $line->debit);
 
                 if ($entry->voucher_type === 'payment' && ($supplier = Supplier::find($line->subledger_id))) {
@@ -854,6 +859,18 @@ class Vouchers
 
             if ($pid && in_array($entry->voucher_type, ['receipt', 'payment'], true) && ($profile = MasterProfile::find($pid))) {
                 app(\App\Actions\Profiles\InstallmentPlans::class)->applyPayment($profile, $role, (float) ($line->credit ?: $line->debit), $entry->id);
+            }
+        }
+
+        // A cleared cheque's voucher tells the party once it posts — now, or later from Posting Pending.
+        if ($entry->source_type === \App\Models\Cheque::class && ($profile = MasterProfile::with('roles')->find($entry->master_profile_id))) {
+            $notify = app(\App\NotificationHub\Triggers\AccountsNotifications::class);
+            $date = $entry->entry_date->toDateString();
+
+            if ($entry->voucher_type === 'receipt' && $profile->hasRole('customer')) {
+                $notify->paymentReceived($profile, (float) $entry->amount, $entry, $date);
+            } elseif ($entry->voucher_type === 'payment' && $profile->hasRole('supplier')) {
+                $notify->paymentSent($profile, (float) $entry->amount, $entry, $date);
             }
         }
 

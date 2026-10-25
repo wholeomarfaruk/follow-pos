@@ -2,6 +2,7 @@
 
 namespace App\NotificationHub;
 
+use App\Models\NotificationRule;
 use App\Models\Setting;
 use Carbon\CarbonImmutable;
 
@@ -52,6 +53,18 @@ class HubSettings
     public static function channelOn(string $channel): bool
     {
         return (bool) self::get("channel_{$channel}");
+    }
+
+    /**
+     * An active rule of this event × audience will send SMS — the older
+     * direct SMS paths (kisti SMS, EMI alert) step aside then, so nobody
+     * gets the same reminder twice.
+     */
+    public static function sendsSms(string $eventKey, string $audience): bool
+    {
+        return self::enabled() && self::channelOn('sms')
+            && NotificationRule::where('event_key', $eventKey)->where('audience', $audience)->where('is_active', true)->get()
+                ->contains(fn (NotificationRule $r) => in_array('sms', $r->channelList(), true));
     }
 
     public static function smsDriver(): ?string

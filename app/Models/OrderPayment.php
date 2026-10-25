@@ -7,6 +7,7 @@ use App\Enums\Sales\OrderPaymentType;
 use App\Enums\Sales\PaymentStatus;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class OrderPayment extends Model
 {
@@ -33,5 +34,11 @@ class OrderPayment extends Model
     public function cashAccount(): BelongsTo
     {
         return $this->belongsTo(Account::class, 'cash_account_id');
+    }
+
+    /** A cheque payment stays pending until this cheque clears (Accounts › Cheques). */
+    public function cheque(): HasOne
+    {
+        return $this->hasOne(Cheque::class);
     }
 }

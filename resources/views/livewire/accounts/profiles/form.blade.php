@@ -79,6 +79,11 @@
                     <a href="{{ route('accounts.profiles.edit', ['profile' => $dup, 'role' => $addRole ?: ($presetRole ?: null)]) }}" wire:navigate class="font-semibold !text-[#92400e]">ওখানে role যোগ করুন</a>
                 </span>
             </div>
+        @elseif ($gone = $this->deletedDuplicate)
+            <div role="status" class="flex flex-wrap items-center justify-between gap-[10px] rounded-[10px] border border-[#c7d2fe] bg-[#eef2ff] px-[14px] py-[10px] text-[13px] text-[#312e81]">
+                <span>এই নম্বর / email-এ আগে একটা profile ছিল, মুছে ফেলা হয়েছে: <b>{{ $gone->display_name }} ({{ $gone->code }})</b> · {{ $gone->deleted_at?->format('d M Y') }}। ফিরিয়ে আনলে তার পুরনো হিসাব-নিকাশসহ ফিরবে — না চাইলে নতুন করেই save করুন।</span>
+                <button type="button" wire:click="restoreDeleted" wire:loading.attr="disabled" class="rounded-[8px] border-0 bg-[#4f46e5] px-[12px] py-[6px] text-[12.5px] font-semibold text-white">আগের profile restore করুন</button>
+            </div>
         @endif
     </section>
 

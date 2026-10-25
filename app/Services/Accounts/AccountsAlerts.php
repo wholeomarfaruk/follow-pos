@@ -5,6 +5,7 @@ namespace App\Services\Accounts;
 use App\Enums\Accounts\JournalEntryStatus;
 use App\Models\JournalEntry;
 use App\Models\LoanRepaymentSchedule;
+use App\NotificationHub\HubSettings;
 use App\Support\AccountsSettings;
 use App\Support\Bdt;
 use Carbon\CarbonImmutable;
@@ -34,7 +35,8 @@ class AccountsAlerts
             }
         }
 
-        if (AccountsSettings::alert('emi_3_days')) {
+        // Notification Center › loan.emi_due (owner, SMS) sends this instead when it is on.
+        if (AccountsSettings::alert('emi_3_days') && ! HubSettings::sendsSms('loan.emi_due', 'owner')) {
             $day = CarbonImmutable::today()->addDays(3);
             $due = LoanRepaymentSchedule::with('loan:id,name,lender')
                 ->whereIn('status', ['pending', 'overdue'])

@@ -120,6 +120,12 @@ class MasterProfile extends Model
         return $this->hasMany(MasterProfileActivity::class);
     }
 
+    /** Cheques received from / issued to this party (Accounts › Cheques). */
+    public function cheques(): HasMany
+    {
+        return $this->hasMany(Cheque::class);
+    }
+
     public function installmentPlans(): HasMany
     {
         return $this->hasMany(InstallmentPlan::class);

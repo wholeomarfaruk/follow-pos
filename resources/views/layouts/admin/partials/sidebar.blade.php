@@ -204,6 +204,16 @@
                             Customers
                         </a>
                         @endif
+                        {{-- The other profile roles live in the Accounts Panel; link straight to them. --}}
+                        @if (auth()->user()?->hasPanel('accounts'))
+                            @foreach (['accounts.profiles.lenders' => 'Lenders', 'accounts.profiles.owners' => 'Owners', 'accounts.profiles.employees' => 'Employees'] as $profileRoute => $profileLabel)
+                                @if (Route::has($profileRoute))
+                                <a href="{{ route($profileRoute) }}" class="block hover:text-gray-200 cursor-pointer">
+                                    {{ $profileLabel }}
+                                </a>
+                                @endif
+                            @endforeach
+                        @endif
                         @if ($canSee('user_device.view'))
                         <a href="{{ route('admin.users.devices') }}"
                             class="block hover:text-gray-200 cursor-pointer {{ Route::currentRouteName() === 'admin.users.devices' ? 'text-gray-200' : '' }}">
@@ -641,6 +651,12 @@
                         <a href="{{ route('admin.accounts.payables.index') }}"
                             class="block hover:text-gray-200 cursor-pointer {{ str_starts_with(Route::currentRouteName(), 'admin.accounts.payables') ? 'text-gray-200' : '' }}">
                             Payables
+                        </a>
+                        @endif
+                        @if (Route::has('accounts.cheques') && auth()->user()?->hasPanel('accounts'))
+                        <a href="{{ route('accounts.cheques') }}"
+                            class="block hover:text-gray-200 cursor-pointer">
+                            Cheques
                         </a>
                         @endif
                         @if ($canSee('accounts_loan.view'))

@@ -3,6 +3,7 @@
 namespace App\Actions\Accounts;
 
 use App\Enums\Accounts\TransactionType;
+use App\Enums\PaymentMethod;
 use App\Models\AccountsCustomerAdvance;
 use App\Models\Customer;
 use App\Models\Order;
@@ -28,14 +29,18 @@ class PostCustomerAdvance
         float $amount,
         string $entryDate,
         ?string $description = null,
+        ?PaymentMethod $paymentMethod = null,
+        ?string $paymentReference = null,
     ): AccountsCustomerAdvance {
-        return DB::transaction(function () use ($customer, $order, $customerAdvanceAccountId, $cashAccountId, $amount, $entryDate, $description) {
+        return DB::transaction(function () use ($customer, $order, $customerAdvanceAccountId, $cashAccountId, $amount, $entryDate, $description, $paymentMethod, $paymentReference) {
             $entry = $this->postJournalEntry->handle([
-                'entry_date'       => $entryDate,
-                'description'      => $description ?? "Advance received — Order #{$order->id}",
-                'transaction_type' => TransactionType::CUSTOMER_ADVANCE->value,
-                'source_type'      => Order::class,
-                'source_id'        => $order->id,
+                'entry_date'        => $entryDate,
+                'description'       => $description ?? "Advance received — Order #{$order->id}",
+                'transaction_type'  => TransactionType::CUSTOMER_ADVANCE->value,
+                'source_type'       => Order::class,
+                'source_id'         => $order->id,
+                'payment_method'    => $paymentMethod?->value,
+                'payment_reference' => $paymentReference ?: null,
             ], [
                 ['account_id' => $cashAccountId, 'debit' => $amount],
                 [

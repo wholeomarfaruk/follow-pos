@@ -44,7 +44,7 @@
         <div class="grid gap-[12px] text-[13px] [grid-template-columns:repeat(auto-fit,minmax(170px,1fr))]">
             <div class="rounded-[10px] bg-[#f9fafb] px-[12px] py-[10px]"><div class="text-[#6b7280]">দিতে হবে (30 days)</div><div class="mt-[2px] text-[18px] font-bold text-[#b91c1c]">{{ $money($plan['payable']) }}</div></div>
             <div class="rounded-[10px] bg-[#f9fafb] px-[12px] py-[10px]"><div class="text-[#6b7280]">Cash + bank + MFS</div><div class="mt-[2px] text-[18px] font-bold">{{ $money($plan['cash']) }}</div></div>
-            <div class="rounded-[10px] bg-[#f9fafb] px-[12px] py-[10px]"><div class="text-[#6b7280]">আসার কথা (COD + due)</div><div class="mt-[2px] text-[18px] font-bold text-[#047857]">+ {{ $money($plan['inflow']) }}</div></div>
+            <div class="rounded-[10px] bg-[#f9fafb] px-[12px] py-[10px]"><div class="text-[#6b7280]">আসার কথা (COD + due + cheque)</div><div class="mt-[2px] text-[18px] font-bold text-[#047857]">+ {{ $money($plan['inflow']) }}</div></div>
             @if ($plan['left'] >= 0)
                 <div class="rounded-[10px] bg-[#ecfdf5] px-[12px] py-[10px]"><div class="text-[#065f46]">৩০ দিন পরে থাকবে (approx)</div><div class="mt-[2px] text-[18px] font-bold text-[#065f46]">{{ $money($plan['left']) }}</div></div>
             @else
@@ -98,7 +98,7 @@
                         @foreach ($rows as $r)
                             <tr wire:key="pay-{{ $r['key'] }}" class="border-t border-[#f0f1f4]">
                                 <td class="acc-no-print py-[11px] pl-[18px]">
-                                    @if (! $r['draft'] && $r['ref']['type'] !== 'payroll')
+                                    @if (! $r['draft'] && $r['ref']['type'] !== 'payroll' && ! ($r['cheque']['bill'] ?? false))
                                         <input type="checkbox" value="{{ $r['key'] }}" x-model="sel" aria-label="Select payment" class="accent-[#4f46e5]">
                                     @endif
                                 </td>
@@ -117,14 +117,19 @@
                                 <td class="px-[8px] py-[11px]">
                                     @if ($r['draft'])
                                         <a href="{{ route('accounts.posting') }}" wire:navigate class="whitespace-nowrap rounded-[6px] bg-[#e0e7ff] px-[8px] py-[3px] text-[12px] font-semibold !text-[#3730a3]">Draft {{ $r['draft'] }}</a>
+                                    @elseif ($r['cheque']['bill'] ?? false)
+                                        <a href="{{ route('accounts.cheques', ['dir' => 'issued']) }}" wire:navigate class="whitespace-nowrap rounded-[6px] bg-[#e0f2fe] px-[8px] py-[3px] text-[12px] font-semibold !text-[#075985]">Cheque দেওয়া</a>
                                     @else
                                         <span class="whitespace-nowrap rounded-[6px] px-[8px] py-[3px] text-[12px] font-semibold {{ $status[$r['when']][0] }}">{{ $status[$r['when']][1] }}</span>
+                                    @endif
+                                    @if ($r['cheque'])
+                                        <div class="mt-[3px] whitespace-nowrap text-[11.5px] text-[#075985]">{{ $r['cheque']['text'] }}{{ $r['cheque']['bill'] ? '' : ' (supplier)' }}</div>
                                     @endif
                                 </td>
                                 <td class="acc-no-print whitespace-nowrap px-[18px] py-[11px] text-right">
                                     @if ($r['ref']['type'] === 'payroll')
                                         <a href="{{ route('accounts.profiles.payroll') }}" wire:navigate class="font-semibold">Prepare payroll</a>
-                                    @elseif (! $r['draft'])
+                                    @elseif (! $r['draft'] && ! ($r['cheque']['bill'] ?? false))
                                         <a href="#" wire:click.prevent="openPay('{{ $r['key'] }}')" class="font-semibold">Pay</a>
                                     @endif
                                     @if (! in_array($r['ref']['type'], ['payroll', 'balance'], true))
@@ -184,6 +189,9 @@
             <div class="text-[13px] text-[#374151]">{{ $pr['for'] ?? '' }} · due {{ isset($pr) ? $pr['due']->format('d M Y') : '' }} · {{ $money($pr['amount'] ?? 0) }}</div>
             <x-payment-method-field method="pay.method" reference="pay.reference" :value="$pay['method'] ?? null"
                 :input-class="$input" label-class="mb-[6px] block text-[13px] font-semibold" class="!gap-[12px]" />
+            @if (($pay['method'] ?? null) === 'cheque')
+                <div class="rounded-[9px] bg-[#fef3c7] px-[12px] py-[9px] text-[12.5px] text-[#92400e]">এখানে Pay করলে টাকা এখনই কাটা ধরা হবে। Cheque পরে release হলে <a href="{{ route('accounts.cheques') }}" wire:navigate class="font-semibold underline">Cheques</a>-এ রাখুন — clear হলে payment হবে, আর release-এর আগে reminder যাবে।</div>
+            @endif
             <div class="grid grid-cols-1 gap-[12px] sm:grid-cols-2">
                 <div class="flex flex-col gap-[6px] sm:col-span-2"><label class="text-[13px] font-semibold">Pay from</label>
                     <select wire:model="pay.account_id" class="{{ $input }}">@foreach ($this->cashAccounts as $a)<option value="{{ $a['id'] }}">{{ $a['name'] }} · {{ $money($a['balance']) }}</option>@endforeach</select>@error('pay.account_id')<span class="{{ $err }}">{{ $message }}</span>@enderror</div>

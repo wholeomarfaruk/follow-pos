@@ -10,6 +10,7 @@ use App\Actions\Accounts\PostOwnerWithdrawal;
 use App\Actions\Accounts\PostSupplierAdvance;
 use App\Actions\Accounts\PostSupplierPayment;
 use App\Enums\Accounts\TransactionType;
+use App\Enums\PaymentMethod;
 use App\Enums\Purchase\SupplierInvoiceType;
 use App\Models\AccountsCustomerInvoice;
 use App\Models\AccountsPaymentAllocation;
@@ -85,9 +86,10 @@ class ProfileVouchers
     }
 
     /** Advance to a supplier before a bill exists: Dr Supplier Advance / Cr cash. */
-    public function supplierAdvance(MasterProfile $profile, float $amount, int $cashAccountId, string $date, ?string $note = null): void
+    public function supplierAdvance(MasterProfile $profile, float $amount, int $cashAccountId, string $date, ?string $note = null,
+        ?PaymentMethod $paymentMethod = null, ?string $paymentReference = null): AccountsSupplierAdvance
     {
-        DB::transaction(function () use ($profile, $amount, $cashAccountId, $date, $note) {
+        return DB::transaction(function () use ($profile, $amount, $cashAccountId, $date, $note, $paymentMethod, $paymentReference) {
             $supplier = $this->parties->supplierFor($profile);
             $profile->addRole('supplier');
 
@@ -98,6 +100,8 @@ class ProfileVouchers
                 'serial_number' => ($supplier->invoices()->max('serial_number') ?? 0) + 1,
                 'type'          => SupplierInvoiceType::ADVANCE,
                 'amount'        => $amount,
+                'payment_method'    => $paymentMethod?->value,
+                'payment_reference' => $paymentReference ?: null,
                 'invoice_date'  => $date,
                 'notes'         => $note,
             ]);
@@ -106,9 +110,13 @@ class ProfileVouchers
                 $supplier, $this->accounts->require(LedgerAccounts::SUPPLIER_ADVANCE), $cashAccountId, $amount, $date,
                 supplierInvoiceId: $invoice->id,
                 description: $note ?: "Advance paid to {$profile->display_name}",
+                paymentMethod: $paymentMethod,
+                paymentReference: $paymentReference,
             );
 
             $profile->logActivity('advance', 'Advance given ' . Bdt::money($amount), ['entry_id' => $advance->journal_entry_id]);
+
+            return $advance;
         });
     }
 

@@ -2,12 +2,17 @@
 
 namespace App\NotificationHub;
 
+use App\Models\Cheque;
 use App\Models\CrmActivity;
+use App\Models\Installment;
+use App\Models\LoanRepaymentSchedule;
 use App\Models\MasterProfile;
 use App\Models\NotificationRule;
 use App\Models\ProductVariant;
 use App\Models\PromiseToPay;
 use App\Models\User;
+use App\Services\Accounts\PayablesSchedule;
+use App\Services\Accounts\Vouchers;
 use App\Services\Profiles\ProfileBalances;
 use App\Support\Bdt;
 use Carbon\CarbonImmutable;
@@ -29,6 +34,11 @@ class ScheduledNotifications
         'birthday' => 'birthday',
         'stock.low' => 'lowStock',
         'lead.followup_due' => 'followUps',
+        'payable.due' => 'payablesDue',
+        'cheque.received_due' => 'chequesToDeposit',
+        'cheque.issued_due' => 'chequesIssued',
+        'kisti.due' => 'kistiDue',
+        'loan.emi_due' => 'emiDue',
     ];
 
     public function __construct(protected NotificationHub $hub, protected ProfileBalances $balances) {}
@@ -38,6 +48,8 @@ class ScheduledNotifications
     {
         $now ??= CarbonImmutable::now();
         $out = [];
+
+        $this->ensureRules();
 
         $rules = NotificationRule::whereIn('event_key', array_keys(self::SCANNERS))->where('is_active', true)->get();
 
@@ -62,6 +74,25 @@ class ScheduledNotifications
         return $out;
     }
 
+    /**
+     * Rule rows are made from the catalog when the Notification Center is
+     * opened; make any missing ones here too, so a daily event added later
+     * runs before anyone visits that page.
+     */
+    protected function ensureRules(): void
+    {
+        $keys = array_keys(self::SCANNERS);
+        $have = NotificationRule::whereIn('event_key', $keys)->get(['event_key', 'audience'])
+            ->map(fn (NotificationRule $r) => "{$r->event_key}|{$r->audience}")->all();
+
+        foreach ($keys as $key) {
+            $audiences = array_keys(NotificationCatalog::event($key)['audiences'] ?? []);
+            if (array_diff(array_map(fn ($a) => "{$key}|{$a}", $audiences), $have)) {
+                NotificationCatalog::syncRules($key);
+            }
+        }
+    }
+
     protected function fire(NotificationRule $rule, array $context): int
     {
         return $this->hub->fire($rule->event_key, $context + ['only_rule' => $rule->id, 'created_by' => null]);
@@ -82,9 +113,11 @@ class ScheduledNotifications
         $ids = MasterProfile::withRole('customer')->pluck('id')->all();
         $due = $this->balances->forProfiles($ids)->filter(fn ($b) => (float) $b->receivable >= $min);
 
-        // Someone who promised a date is left alone until that date passes.
+        // Someone who promised a date is left alone until that date passes,
+        // and so is someone whose cheque hasn't been cleared yet.
         $promised = PromiseToPay::where('status', 'open')->where('due_date', '>=', $now->toDateString())->pluck('master_profile_id')->all();
-        $due = $due->except($promised)->sortByDesc(fn ($b) => (float) $b->receivable);
+        $chequed = Cheque::open()->where('direction', 'received')->whereNotNull('master_profile_id')->pluck('master_profile_id')->all();
+        $due = $due->except([...$promised, ...$chequed])->sortByDesc(fn ($b) => (float) $b->receivable);
 
         if ($due->isEmpty()) {
             return 0;
@@ -237,5 +270,208 @@ class ScheduledNotifications
         }
 
         return $n;
+    }
+
+    // ── payable.due ──────────────────────────────────────────────────
+
+    protected function payablesDue(NotificationRule $rule, CarbonImmutable $now): int
+    {
+        $days = max(0, (int) $rule->condition('days_before', 1));
+        $today = $now->startOfDay();
+        // A bill already paid by an issued cheque (waiting to clear) is reminded through cheque.issued_due.
+        $chequed = Cheque::open()->where('direction', 'issued')->whereNotNull('meta')->pluck('meta')
+            ->flatMap(fn ($m) => (array) ($m['bill_ids'] ?? []))->map(fn ($id) => "bill-{$id}")->all();
+        $rows = app(PayablesSchedule::class)->rows(max(1, $days))->reject(fn ($r) => in_array($r['key'], $chequed, true));
+
+        $soon = $rows->filter(fn ($r) => $r['due']->gte($today) && $r['due']->lte($today->addDays($days)));
+        if ($soon->isEmpty()) {
+            return 0;
+        }
+
+        $list = $soon->take(6)->map(fn ($r) => $r['payee'] . ' ' . $this->money((float) $r['amount']) . ' (' . $r['due']->format('d M') . ')')->implode(', ');
+
+        return $this->fire($rule, [
+            'data' => [
+                'count' => $soon->count(),
+                'total' => $this->money((float) $soon->sum('amount')),
+                'list' => $list . ($soon->count() > 6 ? ' …' : ''),
+                'overdue' => $rows->filter(fn ($r) => $r['due']->lt($today))->count(),
+            ],
+            'url' => rescue(fn () => route('accounts.payables'), null, false),
+            'dedupe' => 'payables-due:' . $now->toDateString(),
+        ]);
+    }
+
+    // ── cheque.received_due ──────────────────────────────────────────
+
+    /** Received cheques still in hand whose date is N days away (that day only: one reminder per date). */
+    protected function chequesToDeposit(NotificationRule $rule, CarbonImmutable $now): int
+    {
+        $day = $now->startOfDay()->addDays(max(0, (int) $rule->condition('days_before', 1)));
+
+        $cheques = Cheque::with('profile.user')->where('direction', 'received')->where('status', 'pending')
+            ->whereDate('due_date', $day->toDateString())->orderByDesc('amount')->get();
+
+        if ($cheques->isEmpty()) {
+            return 0;
+        }
+
+        if ($rule->audience === 'customer') {
+            $n = 0;
+            foreach ($cheques->filter(fn (Cheque $c) => $c->profile) as $c) {
+                $n += $this->fire($rule, [
+                    'customer' => $c->profile,
+                    'data' => $this->chequeData($c),
+                    'related' => $c,
+                    'dedupe' => "cheque-deposit:{$c->id}:{$c->due_date->toDateString()}",
+                ]);
+            }
+
+            return $n;
+        }
+
+        return $this->fire($rule, [
+            'data' => $this->chequeDigest($cheques) + ['date' => $day->format('d M')],
+            'url' => rescue(fn () => route('accounts.cheques'), null, false),
+            'dedupe' => 'cheque-deposit-digest:' . $day->toDateString(),
+        ]);
+    }
+
+    // ── cheque.issued_due ────────────────────────────────────────────
+
+    /** Cheques we issued, every day from N days before their release date up to that date. */
+    protected function chequesIssued(NotificationRule $rule, CarbonImmutable $now): int
+    {
+        $today = $now->startOfDay();
+        $until = $today->addDays(max(0, (int) $rule->condition('days_before', 2)));
+
+        $cheques = Cheque::with('profile')->where('direction', 'issued')->where('status', 'pending')
+            ->whereBetween('due_date', [$today->toDateString(), $until->toDateString()])
+            ->orderBy('due_date')->get();
+
+        if ($cheques->isEmpty()) {
+            return 0;
+        }
+
+        $vouchers = app(Vouchers::class);
+        $balance = $cheques->pluck('account_id')->filter()->unique()->sum(fn ($id) => $vouchers->postedBalance((int) $id));
+
+        return $this->fire($rule, [
+            'data' => $this->chequeDigest($cheques) + ['balance' => $this->money($balance), 'date' => $today->format('d M')],
+            'url' => rescue(fn () => route('accounts.cheques', ['dir' => 'issued']), null, false),
+            'dedupe' => 'cheque-issued-digest:' . $today->toDateString(),
+        ]);
+    }
+
+    // ── kisti.due ────────────────────────────────────────────────────
+
+    /** Customer kisti due today, and N days ahead (the "আগামীকাল" reminder). */
+    protected function kistiDue(NotificationRule $rule, CarbonImmutable $now): int
+    {
+        $today = $now->startOfDay();
+        $days = max(0, (int) $rule->condition('days_before', 1));
+        $dates = array_values(array_unique([$today->toDateString(), $today->addDays($days)->toDateString()]));
+
+        $kisti = Installment::with('plan.profile.user')->where('status', '!=', 'paid')
+            ->whereHas('plan', fn ($q) => $q->where('role', 'customer')->where('status', 'active'))
+            ->whereIn('due_date', $dates)->orderBy('due_date')->get()
+            ->filter(fn (Installment $k) => $k->plan?->profile && (float) $k->adjusted_amount - (float) $k->paid_amount > 0.5);
+
+        if ($kisti->isEmpty()) {
+            return 0;
+        }
+
+        $left = fn (Installment $k) => round((float) $k->adjusted_amount - (float) $k->paid_amount, 2);
+
+        if ($rule->audience === 'customer') {
+            $n = 0;
+            foreach ($kisti as $k) {
+                $isToday = $k->due_date->isSameDay($today);
+                $n += $this->fire($rule, [
+                    'customer' => $k->plan->profile,
+                    'data' => [
+                        'amount' => $this->money($left($k)),
+                        'kisti_no' => "{$k->no}/{$k->plan->count}",
+                        'date' => $k->due_date->format('d M'),
+                        'when' => $isToday ? 'আজ' : ($days === 1 ? 'আগামীকাল' : "{$days} দিন পর"),
+                    ],
+                    'related' => $k,
+                    'dedupe' => "kisti:{$k->id}:{$k->due_date->toDateString()}:" . ($isToday ? 'day' : 'before'),
+                ]);
+            }
+
+            return $n;
+        }
+
+        // Staff: what is due today.
+        $due = $kisti->filter(fn (Installment $k) => $k->due_date->isSameDay($today));
+        if ($due->isEmpty()) {
+            return 0;
+        }
+
+        return $this->fire($rule, [
+            'data' => [
+                'count' => $due->count(),
+                'total' => $this->money($due->sum($left)),
+                'list' => $due->take(6)->map(fn (Installment $k) => $k->plan->profile->display_name . ' ' . $this->money($left($k)))->implode(', ') . ($due->count() > 6 ? ' …' : ''),
+            ],
+            'url' => rescue(fn () => route('accounts.loans'), null, false),
+            'dedupe' => 'kisti-digest:' . $today->toDateString(),
+        ]);
+    }
+
+    // ── loan.emi_due ─────────────────────────────────────────────────
+
+    protected function emiDue(NotificationRule $rule, CarbonImmutable $now): int
+    {
+        $days = max(0, (int) $rule->condition('days_before', 3));
+        $day = $now->startOfDay()->addDays($days);
+
+        $due = LoanRepaymentSchedule::with('loan:id,name,lender')
+            ->whereIn('status', ['pending', 'overdue'])
+            ->whereHas('loan', fn ($q) => $q->where('status', 'active'))
+            ->whereDate('due_date', $day->toDateString())
+            ->get()
+            ->filter(fn (LoanRepaymentSchedule $s) => $s->payable() - (float) $s->paid_amount > 0.5);
+
+        if ($due->isEmpty()) {
+            return 0;
+        }
+
+        $left = fn (LoanRepaymentSchedule $s) => round($s->payable() - (float) $s->paid_amount, 2);
+
+        return $this->fire($rule, [
+            'data' => [
+                'count' => $due->count(),
+                'total' => $this->money($due->sum($left)),
+                'list' => $due->map(fn (LoanRepaymentSchedule $s) => ($s->loan?->lender ?: $s->loan?->name) . ' ' . $this->money($left($s)))->implode(', '),
+                'date' => $day->format('d M'),
+                'when' => $days === 0 ? 'আজ' : ($days === 1 ? 'আগামীকাল' : "{$days} দিন পর"),
+            ],
+            'url' => rescue(fn () => route('accounts.loans'), null, false),
+            'dedupe' => 'emi-due:' . $day->toDateString(),
+        ]);
+    }
+
+    protected function chequeData(Cheque $c): array
+    {
+        return [
+            'amount' => $this->money((float) $c->amount),
+            'cheque_no' => $c->cheque_no,
+            'bank' => $c->bank_name ?: 'Bank',
+            'date' => $c->due_date->format('d M'),
+        ];
+    }
+
+    /** @param  Collection<int, Cheque>  $cheques */
+    protected function chequeDigest(Collection $cheques): array
+    {
+        $list = $cheques->take(6)->map(fn (Cheque $c) => $c->partyName() . ' ' . $this->money((float) $c->amount) . " (#{$c->cheque_no}, " . $c->due_date->format('d M') . ')')->implode(', ');
+
+        return [
+            'count' => $cheques->count(),
+            'total' => $this->money((float) $cheques->sum('amount')),
+            'list' => $list . ($cheques->count() > 6 ? ' …' : ''),
+        ];
     }
 }

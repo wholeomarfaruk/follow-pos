@@ -58,7 +58,7 @@ class DataResetService
             ],
             'accounting' => [
                 'label' => 'Accounting transactions',
-                'description' => 'Journals, vouchers, invoices/bills, advances, reconciliations, day closings, cash counts, assets, loans, payroll, commissions, installments. Chart of accounts is kept; opening balances reset to 0.',
+                'description' => 'Journals, vouchers, invoices/bills, advances, reconciliations, day closings, cash counts, assets, loans, payroll, commissions, installments, cheques. Chart of accounts is kept; opening balances reset to 0.',
                 'tables' => [
                     'journal_entries', 'journal_entry_lines', 'voucher_attachments', 'voucher_events',
                     'accounts_customer_invoices', 'accounts_customer_advances', 'accounts_supplier_bills',
@@ -68,7 +68,7 @@ class DataResetService
                     'loans', 'loan_repayments', 'loan_repayment_schedules',
                     'payroll_runs', 'payroll_items', 'employee_advances',
                     'commission_accruals', 'commission_settlements', 'gateway_settlements',
-                    'installment_plans', 'installments', 'promises_to_pay', 'report_archives',
+                    'installment_plans', 'installments', 'promises_to_pay', 'cheques', 'report_archives',
                 ],
                 'requires' => [],
             ],

@@ -16,12 +16,14 @@ use App\Exceptions\Purchase\SupplierInvoiceDeletionException;
 use App\Exceptions\Purchase\SupplierInvoiceLockedException;
 use App\Models\Account;
 use App\Models\AccountsSupplierBill;
+use App\Models\Cheque;
 use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
 use App\Models\Supplier;
 use App\Models\SupplierInvoice;
+use App\Services\Accounts\Cheques;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
@@ -56,6 +58,11 @@ trait HandlesSupplierInvoiceModal
     // only one of them is on screen at a time.
     public string $paymentMethod    = 'cash';
     public string $paymentReference = '';
+
+    // A "payment" / "advance" / "paid now" by cheque goes to Accounts › Cheques
+    // instead of posting: nothing is booked for the supplier until it clears.
+    public string $chequeBank = '';
+    public string $chequeDate = '';
 
     // PO-based auto-fill (optional — a PO of the current supplier can be
     // selected to pull its line items in, fully editable afterwards)
@@ -117,10 +124,11 @@ trait HandlesSupplierInvoiceModal
             'editingInvoiceId', 'editingIsLocked', 'invoiceType', 'invoiceNumber', 'invoiceIsAdjusted',
             'invoiceNotes', 'purchaseOrderId', 'items', 'productSearch', 'manualAmount', 'documentIds',
             'advanceCashAccountId', 'paymentCashAccountId', 'paymentBills', 'paymentMethod', 'paymentReference',
-            'markPaidNow', 'payNowAmount', 'payNowCashAccountId', ...$this->extraInvoiceModalResetKeys(),
+            'markPaidNow', 'payNowAmount', 'payNowCashAccountId', 'chequeBank', ...$this->extraInvoiceModalResetKeys(),
         ]);
         $this->invoiceType = 'purchase';
         $this->invoiceDate = now()->format('Y-m-d');
+        $this->chequeDate = now()->format('Y-m-d');
         $this->updatedPaymentMethod();
         $this->resetValidation();
         $this->invoiceModal = true;
@@ -161,6 +169,60 @@ trait HandlesSupplierInvoiceModal
     protected function chosenPaymentMethod(): PaymentMethod
     {
         return PaymentMethod::from($this->paymentMethod);
+    }
+
+    /** A new payment / advance / "paid now" by cheque is registered as an issued cheque, not posted. */
+    public function paysByCheque(): bool
+    {
+        return ! $this->editingInvoiceId && $this->paymentMethod === PaymentMethod::CHEQUE->value
+            && (in_array($this->invoiceType, [SupplierInvoiceType::PAYMENT->value, SupplierInvoiceType::ADVANCE->value], true)
+                || ($this->invoiceType === SupplierInvoiceType::PURCHASE->value && $this->markPaidNow));
+    }
+
+    protected function chequeRules(): array
+    {
+        return $this->paysByCheque() ? [
+            'paymentReference' => 'required|string|max:60',
+            'chequeBank'       => 'nullable|string|max:120',
+            'chequeDate'       => 'required|date',
+        ] : [];
+    }
+
+    /** A supplier cheque needs the supplier's profile (the party it is chased / reminded under). */
+    protected function chequeSupplierReady(Supplier $supplier): bool
+    {
+        if (! $this->paysByCheque() || $supplier->master_profile_id) {
+            return true;
+        }
+
+        $this->addError('paymentReference', 'এই supplier-এর profile নেই — cheque রাখতে আগে Accounts › Profiles-এ link করুন।');
+
+        return false;
+    }
+
+    /**
+     * The issued cheque for this supplier, remembering which bills it pays
+     * (settled first when the cheque clears and its payment voucher posts),
+     * or — for an advance — that it clears into a supplier advance.
+     *
+     * @param  list<int>  $billIds
+     */
+    protected function registerSupplierCheque(Supplier $supplier, float $amount, int $accountId, array $billIds, bool $advance = false): Cheque
+    {
+        $meta = array_filter(['bill_ids' => array_values($billIds), 'kind' => $advance ? 'supplier_advance' : null]);
+
+        return app(Cheques::class)->create([
+            'direction'   => 'issued',
+            'cheque_no'   => $this->paymentReference,
+            'bank_name'   => $this->chequeBank,
+            'profile_id'  => $supplier->master_profile_id,
+            'amount'      => $amount,
+            'cheque_date' => $this->chequeDate,
+            'account_id'  => $accountId,
+            'ledger_id'   => $this->accountId($advance ? '1150' : '2100'),
+            'note'        => $this->invoiceNotes ?: ($this->invoiceNumber ? "Ref {$this->invoiceNumber}" : null),
+            'meta'        => $meta ?: null,
+        ]);
     }
 
     /** Advance and payment invoices are money moving; purchase / return aren't. */
@@ -514,21 +576,46 @@ trait HandlesSupplierInvoiceModal
 
         if ($this->invoiceType === SupplierInvoiceType::ADVANCE->value) {
             $rules['advanceCashAccountId'] = 'required|exists:accounts,id';
-            $rules += $this->paymentMethodRules();
+            $rules = $this->chequeRules() + $rules + $this->paymentMethodRules();
         }
 
         if ($this->invoiceType === SupplierInvoiceType::PURCHASE->value && $this->markPaidNow) {
             $rules['payNowAmount']        = 'required|numeric|min:0.01';
             $rules['payNowCashAccountId'] = 'required|exists:accounts,id';
-            $rules += $this->paymentMethodRules();
+            $rules = $this->chequeRules() + $rules + $this->paymentMethodRules();
         }
 
         $this->validate($rules);
+
+        if (! $this->chequeSupplierReady($supplier)) {
+            return;
+        }
 
         $amount = $usesItems ? $this->itemsTotal : (float) $this->manualAmount;
 
         if ($amount <= 0) {
             $this->addError('items', 'Total amount must be greater than zero.');
+            return;
+        }
+
+        // Advance by cheque: nothing is booked until the cheque clears (it then
+        // records the advance invoice and posts it, like an advance paid now).
+        if ($this->invoiceType === SupplierInvoiceType::ADVANCE->value && $this->paysByCheque()) {
+            try {
+                $cheque = $this->registerSupplierCheque($supplier, $amount, (int) $this->advanceCashAccountId, [], advance: true);
+            } catch (\RuntimeException $e) {
+                $this->addError('paymentReference', $e->getMessage());
+                return;
+            }
+
+            activity('purchase')
+                ->causedBy(auth()->user())
+                ->withProperties(['type' => 'cheque_advance', 'amount' => $amount, 'cheque_id' => $cheque->id])
+                ->event('created')
+                ->log("Advance cheque {$cheque->label()} of {$amount} issued to \"{$supplier->name}\" — booked when it clears");
+
+            $this->invoiceModal = false;
+            $this->dispatch('toast', ['type' => 'success', 'message' => 'Advance cheque রাখা হলো (Accounts › Cheques) — clear হলে advance হিসেবে বসবে।']);
             return;
         }
 
@@ -541,36 +628,46 @@ trait HandlesSupplierInvoiceModal
         // One transaction for the invoice, its lines and its Accounts
         // postings, so a posting failure can't leave a half-recorded invoice
         // that has already moved Supplier.balance.
-        $invoice = DB::transaction(function () use ($supplier, $amount, $usesItems, $purchaseOrderId) {
-            $serial = ($supplier->invoices()->max('serial_number') ?? 0) + 1;
+        try {
+            $invoice = DB::transaction(function () use ($supplier, $amount, $usesItems, $purchaseOrderId) {
+                $serial = ($supplier->invoices()->max('serial_number') ?? 0) + 1;
 
-            $invoice = SupplierInvoice::create([
-                'supplier_id'       => $supplier->id,
-                'purchase_order_id' => $purchaseOrderId,
-                'serial_number'     => $serial,
-                'invoice_number'    => $this->invoiceNumber ?: null,
-                'type'              => $this->invoiceType,
-                'amount'            => $amount,
-                'payment_method'    => $this->invoiceType === SupplierInvoiceType::ADVANCE->value ? $this->paymentMethod : null,
-                'payment_reference' => $this->invoiceType === SupplierInvoiceType::ADVANCE->value ? ($this->paymentReference ?: null) : null,
-                'is_adjusted'       => $this->invoiceIsAdjusted,
-                'invoice_date'      => $this->invoiceDate ?: null,
-                'notes'             => $this->invoiceNotes ?: null,
-                'document_ids'      => $this->documentIds ?: null,
-            ]);
+                $invoice = SupplierInvoice::create([
+                    'supplier_id'       => $supplier->id,
+                    'purchase_order_id' => $purchaseOrderId,
+                    'serial_number'     => $serial,
+                    'invoice_number'    => $this->invoiceNumber ?: null,
+                    'type'              => $this->invoiceType,
+                    'amount'            => $amount,
+                    'payment_method'    => $this->invoiceType === SupplierInvoiceType::ADVANCE->value ? $this->paymentMethod : null,
+                    'payment_reference' => $this->invoiceType === SupplierInvoiceType::ADVANCE->value ? ($this->paymentReference ?: null) : null,
+                    'is_adjusted'       => $this->invoiceIsAdjusted,
+                    'invoice_date'      => $this->invoiceDate ?: null,
+                    'notes'             => $this->invoiceNotes ?: null,
+                    'document_ids'      => $this->documentIds ?: null,
+                ]);
 
-            if ($usesItems) {
-                $this->createInvoiceItems($invoice);
+                if ($usesItems) {
+                    $this->createInvoiceItems($invoice);
+                }
+
+                $bill = $this->postInvoiceToAccounts($invoice);
+
+                if ($invoice->type === SupplierInvoiceType::PURCHASE && $this->markPaidNow && $bill) {
+                    $this->payBillNow($supplier, $bill);
+                }
+
+                return $invoice;
+            });
+        } catch (\RuntimeException $e) {
+            // e.g. the cheque for "paid now" is already in the register — nothing was saved.
+            if (! $this->paysByCheque()) {
+                throw $e;
             }
 
-            $bill = $this->postInvoiceToAccounts($invoice);
-
-            if ($invoice->type === SupplierInvoiceType::PURCHASE && $this->markPaidNow && $bill) {
-                $this->payBillNow($supplier, $bill);
-            }
-
-            return $invoice;
-        });
+            $this->addError('paymentReference', $e->getMessage());
+            return;
+        }
 
         activity('purchase')
             ->causedBy(auth()->user())
@@ -675,7 +772,12 @@ trait HandlesSupplierInvoiceModal
             'manualAmount'         => 'required|numeric|min:0.01',
             'paymentCashAccountId' => 'required|exists:accounts,id',
             ...$this->paymentMethodRules(),
+            ...$this->chequeRules(),
         ]);
+
+        if (! $this->chequeSupplierReady($supplier)) {
+            return;
+        }
 
         $allocations = collect($this->paymentBills)
             ->filter()
@@ -685,6 +787,25 @@ trait HandlesSupplierInvoiceModal
                 return $bill ? [$billId => $bill->amountDue()] : [];
             })
             ->all();
+
+        if ($this->paysByCheque()) {
+            try {
+                $cheque = $this->registerSupplierCheque($supplier, (float) $this->manualAmount, (int) $this->paymentCashAccountId, array_keys($allocations));
+            } catch (\RuntimeException $e) {
+                $this->addError('paymentReference', $e->getMessage());
+                return;
+            }
+
+            activity('purchase')
+                ->causedBy(auth()->user())
+                ->withProperties(['type' => 'cheque', 'amount' => $this->manualAmount, 'cheque_id' => $cheque->id])
+                ->event('created')
+                ->log("Cheque {$cheque->label()} of {$this->manualAmount} issued to \"{$supplier->name}\" — pays when it clears");
+
+            $this->invoiceModal = false;
+            $this->dispatch('toast', ['type' => 'success', 'message' => 'Cheque রাখা হলো (Accounts › Cheques) — clear হলে payment হবে, release-এর আগে reminder যাবে।']);
+            return;
+        }
 
         app(PostSupplierPayment::class)->handle(
             supplier: $supplier,
@@ -716,6 +837,11 @@ trait HandlesSupplierInvoiceModal
      */
     protected function payBillNow(Supplier $supplier, AccountsSupplierBill $bill): void
     {
+        if ($this->paysByCheque()) {
+            $this->registerSupplierCheque($supplier, (float) $this->payNowAmount, (int) $this->payNowCashAccountId, [$bill->id]);
+            return;
+        }
+
         app(PostSupplierPayment::class)->handle(
             supplier: $supplier,
             payableAccountId: $this->accountId('2100'),
